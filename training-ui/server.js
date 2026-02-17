@@ -325,15 +325,12 @@ function buildTrainingConfig(jobName, jobPath) {
         const prompts = fs.readFileSync(samplePromptsPath, 'utf8').trim();
         if (prompts.length > 0) {
             const ta = jobConfig.training_arguments || {};
-
-            // Only add sample_arguments if sampling is actually enabled (i.e., one of the intervals is set)
-            // app.js sends 'undefined' for these if sampling is disabled
             if (ta.sample_every_n_steps || ta.sample_every_n_epochs) {
                 merged.sample_arguments = {
                     sample_prompts: samplePromptsPath
                 };
 
-                // Logic: prefer steps if set, otherwise epochs
+                //prefer steps if set, otherwise epochs
                 if (ta.sample_every_n_steps) {
                     merged.sample_arguments.sample_every_n_steps = ta.sample_every_n_steps;
                 } else {
@@ -342,7 +339,7 @@ function buildTrainingConfig(jobName, jobPath) {
             }
         }
     }
-    // Remove from training_args so it doesn't conflict or duplicate
+
     delete merged.training_arguments.sample_every_n_epochs;
     delete merged.training_arguments.sample_every_n_steps;
 
