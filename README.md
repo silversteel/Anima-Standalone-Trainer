@@ -40,6 +40,15 @@ To start the training server and open the web interface:
 ```
 Once launched, open your browser to: `http://localhost:3000`
 
+## Update
+
+To update, simply run this command
+
+```cmd
+git pull
+```
+
+## Misc
 
 Some features and settings from sd-scripts may not be available or working properly at the momment.
 
