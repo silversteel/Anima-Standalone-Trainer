@@ -66,6 +66,7 @@
                     <h2 id="job-title">Job Name</h2>
                     <div class="editor-actions">
                         <button id="btn-save" class="btn btn-success hidden">💾 Save</button>
+                        <button id="btn-discard" class="btn btn-danger hidden">Discard</button>
                         <button id="btn-clone" class="btn btn-secondary">Clone</button>
                         <button id="btn-run" class="btn btn-primary">▶ Train</button>
                         <button id="btn-stop" class="btn btn-danger hidden">⏹ Stop</button>
@@ -313,6 +314,11 @@
                         </div>
 
                         <h4>Caption Settings</h4>
+                        <div class="form-group">
+                            <label>Caption Prefix</label>
+                            <input type="text" id="cfg-caption-prefix" placeholder="e.g. stylish photo of,">
+                            <small>Add to start of every caption.</small>
+                        </div>
                         <div class="form-row">
                             <div class="form-group">
                                 <label>Caption Dropout Rate</label>
@@ -325,10 +331,17 @@
                                 <small>Rate to drop individual comma-separated tags.</small>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>Dropout Every N Epochs</label>
-                            <input type="number" id="cfg-dropout-every-n" value="0" min="0">
-                            <small>Drop all captions every N epochs (0 = disabled).</small>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Dropout Every N Epochs</label>
+                                <input type="number" id="cfg-dropout-every-n" value="0" min="0">
+                                <small>Drop all captions every N epochs (0 = disabled).</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Keep Tokens</label>
+                                <input type="number" id="cfg-keep-tokens" value="1" min="0">
+                                <small>Keep first N tokens (trigger word) unshuffled.</small>
+                            </div>
                         </div>
                         <div class="form-row">
                             <div class="form-group">
@@ -336,9 +349,8 @@
                                 <small>Shuffle comma-separated tags.</small>
                             </div>
                             <div class="form-group">
-                                <label>Keep Tokens</label>
-                                <input type="number" id="cfg-keep-tokens" value="1" min="0">
-                                <small>Keep first N tokens (trigger word) unshuffled.</small>
+                                <label><input type="checkbox" id="cfg-flip-aug"> Flip Augmentations</label>
+                                <small>Random horizontal flip.</small>
                             </div>
                         </div>
 

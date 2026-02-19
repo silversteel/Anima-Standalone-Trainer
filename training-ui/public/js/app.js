@@ -3,6 +3,9 @@
 let currentJob = null;
 let ws = null;
 let isDirty = false;
+let lastSavedConfig = null;
+let lastSavedDataset = null;
+let lastSavedPrompts = [];
 let samplesPollTimer = null;
 let isDraggingBg = false;
 let bgPosPercent = { x: 50, y: 50 };
@@ -141,6 +144,12 @@ async function selectJob(name) {
     const status = await api(`/api/jobs/${name}/train/status`);
     updateRunningState(status.running);
 
+    // Save initial state for dirty checking
+    lastSavedConfig = JSON.parse(JSON.stringify(gatherConfig()));
+    lastSavedDataset = JSON.parse(JSON.stringify(gatherDataset()));
+    lastSavedPrompts = JSON.parse(JSON.stringify(currentPrompts));
+
+
     // Subscribe WS
     subscribeToJob(name);
 
@@ -149,6 +158,7 @@ async function selectJob(name) {
 
     // Reset save button
     $('btn-save').classList.add('hidden');
+    $('btn-discard').classList.add('hidden');
 
     // Refresh job list highlight
     loadJobs();
@@ -257,9 +267,11 @@ function populateDataset(dataset) {
     $('cfg-caption-ext').value = d.caption_extension || '.txt';
     $('cfg-num-repeats').value = s.num_repeats ?? 1;
     $('cfg-keep-tokens').value = s.keep_tokens ?? 1;
+    $('cfg-flip-aug').checked = s.flip_aug ?? false;
+    $('cfg-caption-prefix').value = s.caption_prefix || '';
 
     // Caption Settings
-    $('cfg-caption-dropout').value = s.caption_dropout_rate ?? 0.0;
+    $('cfg-caption-dropout').value = s.caption_dropout_rate ?? 0.05;
     $('cfg-tag-dropout').value = s.caption_tag_dropout_rate ?? 0.0;
     $('cfg-dropout-every-n').value = s.caption_dropout_every_n_epochs ?? 0;
     $('cfg-shuffle-caption').checked = s.shuffle_caption ?? false;
@@ -269,6 +281,20 @@ function populateDataset(dataset) {
     $('cfg-max-bucket').value = g.max_bucket_reso ?? 1536;
     $('cfg-bucket-steps').value = g.bucket_reso_steps ?? 64;
 }
+
+// Helpers for safe parsing
+function safeInt(val, fallback = 0) {
+    if (val === '' || val === null || val === undefined) return fallback;
+    const p = parseInt(val);
+    return isNaN(p) ? fallback : p;
+}
+
+function safeFloat(val, fallback = 0.0) {
+    if (val === '' || val === null || val === undefined) return fallback;
+    const p = parseFloat(val);
+    return isNaN(p) ? fallback : p;
+}
+
 
 function gatherConfig() {
     const unit = document.querySelector('input[name="duration-unit"]:checked').value;
@@ -280,46 +306,49 @@ function gatherConfig() {
             output_name: $('cfg-output-name').value,
             save_model_as: $('cfg-save-format').value,
 
-            max_train_epochs: isEpochs ? parseInt($('cfg-max-epochs').value) : undefined,
-            save_every_n_epochs: isEpochs ? parseInt($('cfg-save-every').value) : undefined,
-            sample_every_n_epochs: (isEpochs && enableSampling) ? parseInt($('cfg-sample-every').value) : undefined,
+            max_train_epochs: isEpochs ? safeInt($('cfg-max-epochs').value) : undefined,
+            save_every_n_epochs: isEpochs ? safeInt($('cfg-save-every').value) : undefined,
+            sample_every_n_epochs: (isEpochs && enableSampling) ? safeInt($('cfg-sample-every').value) : undefined,
 
-            max_train_steps: !isEpochs ? parseInt($('cfg-max-steps').value) : undefined,
-            save_every_n_steps: !isEpochs ? parseInt($('cfg-save-every-steps').value) : undefined,
-            sample_every_n_steps: (!isEpochs && enableSampling) ? parseInt($('cfg-sample-every-steps').value) : undefined,
+            max_train_steps: !isEpochs ? safeInt($('cfg-max-steps').value) : undefined,
+            save_every_n_steps: !isEpochs ? safeInt($('cfg-save-every-steps').value) : undefined,
+            sample_every_n_steps: (!isEpochs && enableSampling) ? safeInt($('cfg-sample-every-steps').value) : undefined,
 
             log_with: 'tensorboard',
-            learning_rate: parseFloat($('cfg-learning-rate').value),
-            text_encoder_lr: parseFloat($('cfg-text-encoder-lr').value),
+            learning_rate: safeFloat($('cfg-learning-rate').value),
+            text_encoder_lr: safeFloat($('cfg-text-encoder-lr').value),
+
             optimizer_type: $('cfg-optimizer').value,
             lr_scheduler: $('cfg-lr-scheduler').value,
-            lr_warmup_steps: parseInt($('cfg-lr-warmup').value),
+            lr_warmup_steps: safeInt($('cfg-lr-warmup').value),
             // Hardware
             mixed_precision: $('cfg-mixed-precision').value,
-            max_data_loader_n_workers: parseInt($('cfg-workers').value),
-            gradient_accumulation_steps: parseInt($('cfg-grad-acc').value),
+            max_data_loader_n_workers: safeInt($('cfg-workers').value),
+            gradient_accumulation_steps: safeInt($('cfg-grad-acc').value),
+
             max_grad_norm: 1.0,
             gradient_checkpointing: $('cfg-gradient-checkpointing').checked,
             flash_attn: $('cfg-flash-attn').checked,
             lowram: $('cfg-lowram').checked,
-            blocks_to_swap: parseInt($('cfg-blocks-to-swap').value),
+            blocks_to_swap: safeInt($('cfg-blocks-to-swap').value),
             persistent_data_loader_workers: $('cfg-persistent-workers').checked,
-            seed: parseInt($('cfg-seed').value),
+            seed: safeInt($('cfg-seed').value),
             cache_latents_to_disk: $('cfg-cache-latents').checked,
-            vae_batch_size: parseInt($('cfg-vae-batch').value),
+            vae_batch_size: safeInt($('cfg-vae-batch').value),
             cache_text_encoder_outputs_to_disk: $('cfg-cache-te').checked
         },
         network_arguments: {
             network_module: $('cfg-network-module').value,
-            network_dim: parseInt($('cfg-network-dim').value),
-            network_alpha: parseInt($('cfg-network-alpha').value),
+            network_dim: safeInt($('cfg-network-dim').value),
+            network_alpha: safeInt($('cfg-network-alpha').value),
             network_train_unet_only: $('cfg-unet-only').checked,
             ...(($('cfg-network-weights').value) && { network_weights: $('cfg-network-weights').value }),
             ...(($('cfg-resume').value) && { resume: $('cfg-resume').value })
         },
         anima_arguments: {
             timestep_sample_method: $('cfg-timestep-method').value,
-            discrete_flow_shift: parseFloat($('cfg-flow-shift').value),
+            discrete_flow_shift: safeFloat($('cfg-flow-shift').value),
+
             weighting_scheme: 'logit_normal'
         },
         gpu_ids: Array.from(document.querySelectorAll('input[name="gpu-select"]:checked'))
@@ -330,27 +359,30 @@ function gatherConfig() {
 }
 
 function gatherDataset() {
-    const res = parseInt($('cfg-resolution').value);
+    const res = safeInt($('cfg-resolution').value);
     return {
         general: {
             enable_bucket: $('cfg-enable-bucket').checked,
-            min_bucket_reso: parseInt($('cfg-min-bucket').value),
-            max_bucket_reso: parseInt($('cfg-max-bucket').value),
-            bucket_reso_steps: parseInt($('cfg-bucket-steps').value)
+            min_bucket_reso: safeInt($('cfg-min-bucket').value),
+            max_bucket_reso: safeInt($('cfg-max-bucket').value),
+            bucket_reso_steps: safeInt($('cfg-bucket-steps').value)
         },
         datasets: [{
             resolution: [res, res],
-            batch_size: parseInt($('cfg-batch-size').value),
+            batch_size: safeInt($('cfg-batch-size').value),
             caption_extension: $('cfg-caption-ext').value,
             subsets: [{
                 image_dir: $('cfg-image-dir').value,
-                num_repeats: parseInt($('cfg-num-repeats').value),
-                keep_tokens: parseInt($('cfg-keep-tokens').value),
+                num_repeats: safeInt($('cfg-num-repeats').value),
+                keep_tokens: safeInt($('cfg-keep-tokens').value),
+                flip_aug: $('cfg-flip-aug').checked,
+                caption_prefix: $('cfg-caption-prefix').value,
 
                 // Caption Settings
-                caption_dropout_rate: parseFloat($('cfg-caption-dropout').value),
-                caption_tag_dropout_rate: parseFloat($('cfg-tag-dropout').value),
-                caption_dropout_every_n_epochs: parseInt($('cfg-dropout-every-n').value),
+                caption_dropout_rate: safeFloat($('cfg-caption-dropout').value),
+                caption_tag_dropout_rate: safeFloat($('cfg-tag-dropout').value),
+                caption_dropout_every_n_epochs: safeInt($('cfg-dropout-every-n').value),
+
                 shuffle_caption: $('cfg-shuffle-caption').checked
             }]
         }]
@@ -375,18 +407,60 @@ async function saveJob() {
     // Save Prompts
     await savePrompts();
 
-    isDirty = false;
-    $('btn-save').classList.add('hidden');
+    // Update last saved state
+    lastSavedConfig = JSON.parse(JSON.stringify(config));
+    lastSavedDataset = JSON.parse(JSON.stringify(dataset));
+    lastSavedPrompts = JSON.parse(JSON.stringify(currentPrompts));
+
+    checkDirty();
     showToast('Job saved');
+}
+
+function checkDirty() {
+    if (!currentJob) return;
+
+    const currentConfig = gatherConfig();
+    const currentDataset = gatherDataset();
+
+    // Deep compare
+    const configChanged = JSON.stringify(currentConfig) !== JSON.stringify(lastSavedConfig);
+    const datasetChanged = JSON.stringify(currentDataset) !== JSON.stringify(lastSavedDataset);
+    const promptsChanged = JSON.stringify(currentPrompts) !== JSON.stringify(lastSavedPrompts);
+
+    isDirty = configChanged || datasetChanged || promptsChanged;
+
+    if (isDirty) {
+        $('btn-save').classList.remove('hidden');
+        $('btn-discard').classList.remove('hidden');
+    } else {
+        $('btn-save').classList.add('hidden');
+        $('btn-discard').classList.add('hidden');
+    }
+}
+
+function discardChanges() {
+    if (!currentJob || !isDirty) return;
+
+    showConfirm('Discard Changes', 'Discard all unsaved changes and revert to last saved state?', () => {
+        populateConfig(lastSavedConfig);
+        populateDataset(lastSavedDataset);
+        currentPrompts = JSON.parse(JSON.stringify(lastSavedPrompts));
+        renderPrompts();
+
+        isDirty = false;
+        $('btn-save').classList.add('hidden');
+        $('btn-discard').classList.add('hidden');
+        showToast('Changes discarded');
+    });
 }
 
 // Mark dirty on any input change
 document.addEventListener('input', (e) => {
     if (e.target.closest('.tab-content') && e.target.closest('.tab-pane')) {
-        isDirty = true;
-        $('btn-save').classList.remove('hidden');
+        checkDirty();
     }
 });
+
 
 // ==========================================
 //  Prompts
@@ -504,9 +578,10 @@ function renderPrompts() {
 
             card.classList.toggle('skipped', p.skip);
 
-            isDirty = true;
-            $('btn-save').classList.remove('hidden');
+            checkDirty();
+
         };
+
 
         const tx = card.querySelector('.p-text');
         const autoResize = () => {
@@ -530,11 +605,12 @@ function renderPrompts() {
 function deletePrompt(idx) {
     currentPrompts.splice(idx, 1);
     renderPrompts();
-    isDirty = true;
-    $('btn-save').classList.remove('hidden');
+    checkDirty();
 }
 
+
 function addPrompt() {
+
     // Get defaults from global bar
     const w = parseInt($('global-w').value) || 832;
     const h = parseInt($('global-h').value) || 1216;
@@ -548,11 +624,13 @@ function addPrompt() {
 
     currentPrompts.push({ text: '', w, h, s, l, d, skip: false });
     renderPrompts();
-    isDirty = true;
-    $('btn-save').classList.remove('hidden');
+    currentPrompts.push({ text: '', w, h, s, l, d, skip: false });
+    renderPrompts();
+    checkDirty();
 }
 
 function applyGlobalSettings() {
+
     const w = parseInt($('global-w').value);
     const h = parseInt($('global-h').value);
     const s = parseInt($('global-s').value);
@@ -574,9 +652,10 @@ function applyGlobalSettings() {
     });
 
     renderPrompts();
-    isDirty = true;
-    $('btn-save').classList.remove('hidden');
+    renderPrompts();
+    checkDirty();
     showToast(d === 0 ? 'Random seeds applied to all prompts' : 'Global settings applied to all prompts');
+
 }
 
 // Helper to escape HTML for textarea
@@ -1878,12 +1957,11 @@ async function loadGPUs() {
                     card.classList.toggle('selected', e.target.checked);
                     return;
                 }
-                const cb = card.querySelector('input');
                 cb.checked = !cb.checked;
                 card.classList.toggle('selected', cb.checked);
-                isDirty = true;
-                $('btn-save').classList.remove('hidden');
+                checkDirty();
             });
+
 
             container.appendChild(card);
         });
@@ -2003,7 +2081,10 @@ $('btn-delete').addEventListener('click', () => {
         await api(`/api/jobs/${currentJob}`, { method: 'DELETE' });
         currentJob = null;
         isDirty = false;
+        $('btn-save').classList.add('hidden');
+        $('btn-discard').classList.add('hidden');
         emptyState.classList.remove('hidden');
+
         jobEditor.classList.add('hidden');
         await loadJobs();
         showToast('Job deleted');
@@ -2212,6 +2293,22 @@ async function init() {
 
     // Start status polling
     setInterval(updateGPUActivity, 3000);
+
+    // Watch for config changes
+    document.addEventListener('input', (e) => {
+        if (e.target.id && e.target.id.startsWith('cfg-')) {
+            checkDirty();
+        }
+    });
+    document.addEventListener('change', (e) => {
+        if (e.target.id && e.target.id.startsWith('cfg-')) {
+            checkDirty();
+        }
+    });
+
+    // Discard Button
+    $('btn-discard').addEventListener('click', discardChanges);
+
 
     // Restore Job
     const lastJob = localStorage.getItem('lastJob');

@@ -4,14 +4,14 @@
 [training_arguments]
 output_name = "my_anima_lora"
 save_model_as = "safetensors"
-max_train_epochs = 20
+max_train_epochs = 15
 save_every_n_epochs = 1
 log_with = "tensorboard"
 learning_rate = 1e-4
 text_encoder_lr = 5e-5
 optimizer_type = "AdamW8bit"
 lr_scheduler = "cosine"
-lr_warmup_steps = 100
+lr_warmup_steps = 0
 mixed_precision = "bf16"
 gradient_checkpointing = true
 gradient_accumulation_steps = 1
