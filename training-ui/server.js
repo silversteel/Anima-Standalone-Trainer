@@ -730,7 +730,6 @@ function killPersistentGen() {
         } catch (e) {
             persistentGenProcess = null;
         }
-        persistentGenProcess = null;
     }
 }
 
@@ -747,7 +746,7 @@ app.post('/api/jobs/:name/unload', (req, res) => {
     }
 });
 
-app.post('/api/jobs/:name/train/stop', (req, res) => {
+app.post('/api/jobs/:name/train/stop', async (req, res) => {
     try {
         const jobName = sanitizeName(req.params.name);
         const job = runningJobs.get(jobName);
@@ -758,7 +757,7 @@ app.post('/api/jobs/:name/train/stop', (req, res) => {
 
         // Kill the process tree
         if (job.pid) {
-            killProcess(job.pid);
+            await killProcess(job.pid);
         }
 
         runningJobs.delete(jobName);
@@ -769,7 +768,7 @@ app.post('/api/jobs/:name/train/stop', (req, res) => {
     }
 });
 
-app.post('/api/jobs/:name/tensorboard/stop', (req, res) => {
+app.post('/api/jobs/:name/tensorboard/stop', async (req, res) => {
     try {
         const jobName = sanitizeName(req.params.name);
         const tb = tbProcesses.get(jobName);
@@ -779,7 +778,7 @@ app.post('/api/jobs/:name/tensorboard/stop', (req, res) => {
         }
 
         if (tb.pid) {
-            killProcess(tb.pid);
+            await killProcess(tb.pid);
         }
 
         tbProcesses.delete(jobName);
@@ -1192,29 +1191,6 @@ python -m accelerate.commands.launch --num_cpu_threads_per_process 1 ${accelerat
     }
 });
 
-app.post('/api/jobs/:name/train/stop', (req, res) => {
-    try {
-        const jobName = sanitizeName(req.params.name);
-        const job = runningJobs.get(jobName);
-
-        if (!job) {
-            return res.status(400).json({ error: 'Job not running' });
-        }
-
-        // Kill the process tree on Windows
-        if (job.pid) {
-            exec(`taskkill /PID ${job.pid} /F /T`, (err) => {
-                if (err) console.error(`Taskkill failed: ${err}`);
-            });
-        }
-
-        runningJobs.delete(jobName);
-        broadcastStatus(jobName, 'idle');
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
 
 app.get('/api/jobs/:name/train/status', (req, res) => {
     try {
