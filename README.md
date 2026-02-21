@@ -30,6 +30,7 @@ Run the provided setup script for your operating system:
 
 *This will create a virtual environment (`venv`), install all Python dependencies (assuming you have met the prereqisites), and set up the Web UI.*
 
+This script will probably install a pytorch with CPU only.
 Depends on your system, you may want to install a specific version of Pytorch with CUDA.
 
 ## Launching the UI
