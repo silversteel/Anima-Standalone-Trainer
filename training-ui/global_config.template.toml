@@ -1,4 +1,4 @@
-venv_path = "C:\\sd-scripts\\venv"
+venv_path = ""
 
 [model_paths]
 # Absolute paths to your model files. Use double backslashes for Windows paths.
@@ -14,3 +14,4 @@ brightness_level = 100
 blur_level = 0
 text_shadow_size = 0
 theme = "github-dark"
+
