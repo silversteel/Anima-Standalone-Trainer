@@ -1,5 +1,6 @@
 [general]
 enable_bucket = true
+bucket_no_upscale = true
 min_bucket_reso = 512
 max_bucket_reso = 1536
 bucket_reso_steps = 64

@@ -10,6 +10,7 @@ log_with = "tensorboard"
 learning_rate = 1e-4
 text_encoder_lr = 5e-5
 optimizer_type = "AdamW8bit"
+optimizer_args = [ "weight_decay=0.01",]
 lr_scheduler = "cosine"
 lr_warmup_steps = 0
 mixed_precision = "bf16"

@@ -225,6 +225,26 @@ function populateConfig(config) {
     $('cfg-lr-warmup').value = t.lr_warmup_steps ?? 100;
     $('cfg-seed').value = t.seed ?? 42;
 
+    // Extract weight decay
+    let wdValue = '0';
+    let decoupleValue = true;
+    if (t.optimizer_args && Array.isArray(t.optimizer_args)) {
+        const wdArg = t.optimizer_args.find(arg => String(arg).startsWith('weight_decay='));
+        if (wdArg) {
+            wdValue = wdArg.split('=')[1];
+        }
+        const decoupleArg = t.optimizer_args.find(arg => String(arg).startsWith('decouple='));
+        if (decoupleArg) {
+            decoupleValue = decoupleArg.split('=')[1].toLowerCase() === 'true';
+        }
+    }
+    $('cfg-weight-decay').value = wdValue;
+    $('cfg-decouple').checked = decoupleValue;
+
+    // Update conditional visibility
+    updateOptimizerOptions();
+
+
     const maxSteps = t.max_train_steps;
     const isSteps = maxSteps && maxSteps > 0;
     document.querySelector(`input[name="duration-unit"][value="${isSteps ? 'steps' : 'epochs'}"]`).checked = true;
@@ -303,9 +323,16 @@ function populateDataset(dataset) {
     $('cfg-shuffle-caption').checked = s.shuffle_caption ?? false;
 
     $('cfg-enable-bucket').checked = g.enable_bucket ?? true;
+    $('cfg-bucket-no-upscale').checked = g.bucket_no_upscale ?? true;
     $('cfg-min-bucket').value = g.min_bucket_reso ?? 512;
     $('cfg-max-bucket').value = g.max_bucket_reso ?? 1536;
     $('cfg-bucket-steps').value = g.bucket_reso_steps ?? 64;
+}
+
+function updateOptimizerOptions() {
+    const optimizer = $('cfg-optimizer').value;
+    const isProdigy = optimizer.includes('Prodigy') || optimizer.includes('DAdapt');
+    $('group-decouple').classList.toggle('hidden', !isProdigy);
 }
 
 // Helpers for safe parsing
@@ -327,6 +354,17 @@ function gatherConfig() {
     const isEpochs = unit === 'epochs';
     const enableSampling = $('cfg-enable-sampling').checked;
 
+    const optimizerArgs = [];
+    const wdValue = $('cfg-weight-decay').value;
+    if (wdValue !== '') {
+        optimizerArgs.push(`weight_decay=${wdValue}`);
+    }
+
+    if (!$('group-decouple').classList.contains('hidden')) {
+        const isDecoupled = $('cfg-decouple').checked;
+        optimizerArgs.push(`decouple=${isDecoupled ? 'True' : 'False'}`);
+    }
+
     const config = {
         training_arguments: {
             output_name: $('cfg-output-name').value,
@@ -345,6 +383,7 @@ function gatherConfig() {
             text_encoder_lr: safeFloat($('cfg-text-encoder-lr').value),
 
             optimizer_type: $('cfg-optimizer').value,
+            optimizer_args: optimizerArgs.length > 0 ? optimizerArgs : undefined,
             lr_scheduler: $('cfg-lr-scheduler').value,
             lr_warmup_steps: safeInt($('cfg-lr-warmup').value),
             // Hardware
@@ -389,6 +428,7 @@ function gatherDataset() {
     return {
         general: {
             enable_bucket: $('cfg-enable-bucket').checked,
+            bucket_no_upscale: $('cfg-bucket-no-upscale').checked,
             min_bucket_reso: safeInt($('cfg-min-bucket').value),
             max_bucket_reso: safeInt($('cfg-max-bucket').value),
             bucket_reso_steps: safeInt($('cfg-bucket-steps').value)
@@ -2354,6 +2394,9 @@ async function init() {
             checkDirty();
         }
     });
+
+    // Optimizer custom bindings
+    $('cfg-optimizer').addEventListener('change', updateOptimizerOptions);
 
     // Discard Button
     $('btn-discard').addEventListener('click', discardChanges);
