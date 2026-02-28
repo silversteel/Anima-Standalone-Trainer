@@ -45,6 +45,12 @@ To start the training server and open the web interface:
 ```
 Once launched, open your browser to: `http://localhost:3000`
 
+## Release
+
+**v1.1.0. Improving caching and others I/O performance.**
+
+Important performance release, please consider update
+
 ## Update
 
 To update, simply run this command
