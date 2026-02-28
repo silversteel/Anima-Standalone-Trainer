@@ -1,5 +1,5 @@
 [IMPORTANT]
-> ** v1.1.0 Update: Improve caching and others I/O performance. Fix multi-GPU support on Windows with DPP. Check for more information below. Please consider update asap**
+> ** v1.1.0 Update: Improve caching and others I/O performance. Fix multi-GPU support on Windows with DDP. Check for more information below. Please consider update asap**
 
 # Anima Standalone Trainer
 
