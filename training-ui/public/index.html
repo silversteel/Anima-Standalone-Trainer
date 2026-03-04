@@ -211,15 +211,23 @@
                                 </select>
                             </div>
                             <div class="form-group">
+                                <label>Save Precision</label>
+                                <select id="cfg-save-precision">
+                                    <option value="bf16">BFloat16</option>
+                                    <option value="fp16">Float16</option>
+                                    <option value="float">Float32</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
                                 <label>DataLoader Workers</label>
                                 <input type="number" id="cfg-workers" value="4" min="0" max="16">
                             </div>
+                        </div>
 
-                            <div class="form-group">
-                                <label>GPU Selection</label>
-                                <div id="cfg-gpu-selection" class="gpu-card-grid">
-                                    <small>Loading GPUs...</small>
-                                </div>
+                        <div class="form-group">
+                            <label>GPU Selection</label>
+                            <div id="cfg-gpu-selection" class="gpu-card-grid">
+                                <small>Loading GPUs...</small>
                             </div>
                         </div>
                         <div class="form-group">

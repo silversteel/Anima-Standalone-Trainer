@@ -259,6 +259,7 @@ function populateConfig(config) {
 
     $('cfg-output-name').value = t.output_name || 'my_anima_lora';
     $('cfg-save-format').value = t.save_model_as || 'safetensors';
+    $('cfg-save-precision').value = t.save_precision || 'bf16';
     $('cfg-mixed-precision').value = t.mixed_precision || 'bf16';
     $('cfg-workers').value = t.max_data_loader_n_workers ?? 4;
     $('cfg-grad-acc').value = t.gradient_accumulation_steps ?? 1;
@@ -389,6 +390,7 @@ function gatherConfig() {
             lr_warmup_steps: safeInt($('cfg-lr-warmup').value),
             // Hardware
             mixed_precision: $('cfg-mixed-precision').value,
+            save_precision: $('cfg-save-precision').value || undefined,
             max_data_loader_n_workers: safeInt($('cfg-workers').value),
             gradient_accumulation_steps: safeInt($('cfg-grad-acc').value),
 
