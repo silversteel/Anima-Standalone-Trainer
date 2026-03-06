@@ -12,6 +12,7 @@ let lastSavedNegativePrompt = '';
 let samplesPollTimer = null;
 let isDraggingBg = false;
 let bgPosPercent = { x: 50, y: 50 };
+let currentSubsets = [];
 
 // --- DOM Refs ---
 const $ = (id) => document.getElementById(id);
@@ -306,30 +307,47 @@ function populateConfig(config) {
 
 function populateDataset(dataset) {
     const g = dataset.general || {};
-    const d = (dataset.datasets && dataset.datasets[0]) || {};
-    const s = (d.subsets && d.subsets[0]) || {};
+    let d = {};
+    if (Array.isArray(dataset.datasets)) {
+        d = dataset.datasets[0] || {};
+    } else if (dataset.datasets) {
+        d = dataset.datasets;
+    }
 
-    $('cfg-image-dir').value = s.image_dir || '';
     const res = Array.isArray(d.resolution) ? d.resolution[0] : (d.resolution || 1536);
     $('cfg-resolution').value = res;
     $('cfg-batch-size').value = d.batch_size ?? 4;
     $('cfg-caption-ext').value = d.caption_extension || '.txt';
-    $('cfg-num-repeats').value = s.num_repeats ?? 1;
-    $('cfg-keep-tokens').value = s.keep_tokens ?? 1;
-    $('cfg-flip-aug').checked = s.flip_aug ?? false;
-    $('cfg-caption-prefix').value = s.caption_prefix || '';
-
-    // Caption Settings
-    $('cfg-caption-dropout').value = s.caption_dropout_rate ?? 0.05;
-    $('cfg-tag-dropout').value = s.caption_tag_dropout_rate ?? 0.0;
-    $('cfg-dropout-every-n').value = s.caption_dropout_every_n_epochs ?? 0;
-    $('cfg-shuffle-caption').checked = s.shuffle_caption ?? false;
 
     $('cfg-enable-bucket').checked = g.enable_bucket ?? true;
     $('cfg-bucket-no-upscale').checked = g.bucket_no_upscale ?? true;
     $('cfg-min-bucket').value = g.min_bucket_reso ?? 512;
     $('cfg-max-bucket').value = g.max_bucket_reso ?? 1536;
     $('cfg-bucket-steps').value = g.bucket_reso_steps ?? 64;
+
+    // Load Subsets into memory
+    let subsetsRaw = d.subsets || [];
+    if (!Array.isArray(subsetsRaw)) subsetsRaw = [subsetsRaw];
+
+    // Convert to our internal state format
+    currentSubsets = subsetsRaw.map(s => ({
+        image_dir: s.image_dir || '',
+        num_repeats: s.num_repeats ?? 1,
+        keep_tokens: s.keep_tokens ?? 1,
+        flip_aug: s.flip_aug ?? false,
+        caption_prefix: s.caption_prefix || '',
+        caption_dropout_rate: s.caption_dropout_rate ?? 0.05,
+        caption_tag_dropout_rate: s.caption_tag_dropout_rate ?? 0.0,
+        caption_dropout_every_n_epochs: s.caption_dropout_every_n_epochs ?? 0,
+        shuffle_caption: s.shuffle_caption ?? false
+    }));
+
+    // Edge case: if empty, force at least 1
+    if (currentSubsets.length === 0) {
+        addSubset(false);
+    }
+
+    renderSubsets();
 }
 
 function updateOptimizerOptions() {
@@ -442,22 +460,183 @@ function gatherDataset() {
             resolution: [res, res],
             batch_size: safeInt($('cfg-batch-size').value),
             caption_extension: $('cfg-caption-ext').value,
-            subsets: [{
-                image_dir: $('cfg-image-dir').value,
-                num_repeats: safeInt($('cfg-num-repeats').value),
-                keep_tokens: safeInt($('cfg-keep-tokens').value),
-                flip_aug: $('cfg-flip-aug').checked,
-                caption_prefix: $('cfg-caption-prefix').value,
-
-                // Caption Settings
-                caption_dropout_rate: safeFloat($('cfg-caption-dropout').value),
-                caption_tag_dropout_rate: safeFloat($('cfg-tag-dropout').value),
-                caption_dropout_every_n_epochs: safeInt($('cfg-dropout-every-n').value),
-
-                shuffle_caption: $('cfg-shuffle-caption').checked
-            }]
+            subsets: currentSubsets.map(s => ({
+                image_dir: s.image_dir,
+                num_repeats: safeInt(s.num_repeats),
+                keep_tokens: safeInt(s.keep_tokens),
+                flip_aug: s.flip_aug,
+                caption_prefix: s.caption_prefix,
+                caption_dropout_rate: safeFloat(s.caption_dropout_rate),
+                caption_tag_dropout_rate: safeFloat(s.caption_tag_dropout_rate),
+                caption_dropout_every_n_epochs: safeInt(s.caption_dropout_every_n_epochs),
+                shuffle_caption: s.shuffle_caption
+            }))
         }]
     };
+}
+
+// ==========================================
+//  Dataset Subsets
+// ==========================================
+
+function addSubset(shouldRender = true) {
+    currentSubsets.push({
+        image_dir: '',
+        num_repeats: 1,
+        keep_tokens: 1,
+        flip_aug: false,
+        caption_prefix: '',
+        caption_dropout_rate: 0.05,
+        caption_tag_dropout_rate: 0.0,
+        caption_dropout_every_n_epochs: 0,
+        shuffle_caption: false,
+        collapsed: false
+    });
+    if (shouldRender) {
+        renderSubsets();
+        checkDirty();
+    }
+}
+
+function deleteSubset(idx) {
+    if (currentSubsets.length <= 1) return; // Prevent deleting the last one
+    currentSubsets.splice(idx, 1);
+    renderSubsets();
+    checkDirty();
+}
+
+function renderSubsets() {
+    const container = $('dataset-subsets-list');
+    if (!container) return;
+    container.innerHTML = '';
+
+    currentSubsets.forEach((subset, idx) => {
+        const isLastOne = currentSubsets.length === 1;
+        const isCollapsed = !!subset.collapsed;
+        const card = document.createElement('div');
+        card.className = 'prompt-card-edit';
+        card.style.flexDirection = 'column';
+        card.style.alignItems = 'stretch';
+        card.style.padding = isCollapsed ? '8px 15px' : '15px';
+
+        const dirName = subset.image_dir ? subset.image_dir.split(/[\\/]/).pop() : 'Empty Path';
+
+        card.innerHTML = `
+            <div class="prompt-card-header" style="justify-content: space-between; align-items: center; border-bottom: ${isCollapsed ? 'none' : '1px solid var(--border)'}; padding-bottom: ${isCollapsed ? '0' : '8px'}; margin-bottom: ${isCollapsed ? '0' : '12px'};">
+                <div style="display: flex; align-items: center; gap: 10px; cursor: pointer; flex: 1;" class="subset-toggle">
+                    <span style="font-size: 0.8rem; transition: transform 0.2s; transform: rotate(${isCollapsed ? '-90deg' : '0deg'})">▼</span>
+                    <label style="font-weight: 600; cursor: pointer;">Dataset ${idx + 1} <span style="font-weight: normal; font-size: 0.8rem; color: var(--text-muted); margin-left: 10px;">${isCollapsed ? '(' + dirName + ')' : ''}</span></label>
+                </div>
+                <button class="btn btn-ghost btn-sm btn-delete-subset" title="Delete Dataset" 
+                    ${isLastOne ? 'disabled' : ''} 
+                    style="color: var(--danger, #ff4d4d); transition: transform 0.1s; ${isLastOne ? 'opacity:0.3; cursor:not-allowed;' : ''}">🗑️</button>
+            </div>
+            
+            <div class="subset-body" style="display: ${isCollapsed ? 'none' : 'block'}">
+                <div class="form-group">
+                    <label style="font-size: 0.8rem;">Image Directory</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" class="sub-image-dir" value="${escapeHtml(subset.image_dir)}" placeholder="C:\\path\\to\\images" style="flex: 1;">
+                        <button class="btn btn-secondary btn-open-dir" title="Open folder">📂</button>
+                    </div>
+                </div>
+
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;">Num Repeats</label>
+                        <input type="number" class="sub-num-repeats" value="${subset.num_repeats}" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;">Keep Tokens</label>
+                        <input type="number" class="sub-keep-tokens" value="${subset.keep_tokens}" min="0">
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top: 10px;">
+                    <label style="font-size: 0.8rem;">Caption Prefix</label>
+                    <input type="text" class="sub-caption-prefix" value="${escapeHtml(subset.caption_prefix)}" placeholder="e.g. A photo of,">
+                </div>
+
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;">Caption Dropout Rate</label>
+                        <input type="number" class="sub-caption-dropout" value="${subset.caption_dropout_rate}" step="0.01" min="0" max="1">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;">Tag Dropout Rate</label>
+                        <input type="number" class="sub-tag-dropout" value="${subset.caption_tag_dropout_rate}" step="0.01" min="0" max="1">
+                    </div>
+                </div>
+
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;">Dropout Every N Epochs</label>
+                        <input type="number" class="sub-dropout-every-n" value="${subset.caption_dropout_every_n_epochs}" min="0">
+                        <small style="display:block; font-size: 0.7rem; color: var(--text-muted);">0 = disabled</small>
+                    </div>
+                    <div class="form-group">
+                    </div>
+                </div>
+
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;"><input type="checkbox" class="sub-shuffle-caption" ${subset.shuffle_caption ? 'checked' : ''}> Shuffle Captions</label>
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size: 0.8rem;"><input type="checkbox" class="sub-flip-aug" ${subset.flip_aug ? 'checked' : ''}> Flip Augmentations</label>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Toggle collapse
+        card.querySelector('.subset-toggle').addEventListener('click', () => {
+            subset.collapsed = !subset.collapsed;
+            renderSubsets();
+        });
+
+        // Update memory immediately on input
+        if (!isCollapsed) {
+            card.querySelectorAll('input').forEach(input => {
+                input.addEventListener('input', () => {
+                    subset.image_dir = card.querySelector('.sub-image-dir').value;
+                    subset.num_repeats = card.querySelector('.sub-num-repeats').value;
+                    subset.keep_tokens = card.querySelector('.sub-keep-tokens').value;
+                    subset.caption_prefix = card.querySelector('.sub-caption-prefix').value;
+                    subset.caption_dropout_rate = card.querySelector('.sub-caption-dropout').value;
+                    subset.caption_tag_dropout_rate = card.querySelector('.sub-tag-dropout').value;
+                    subset.caption_dropout_every_n_epochs = card.querySelector('.sub-dropout-every-n').value;
+                    subset.shuffle_caption = card.querySelector('.sub-shuffle-caption').checked;
+                    subset.flip_aug = card.querySelector('.sub-flip-aug').checked;
+                    checkDirty();
+                });
+            });
+
+            card.querySelector('.btn-open-dir').addEventListener('click', async () => {
+                const dir = subset.image_dir.trim();
+                if (!dir) {
+                    showToast('Please enter a directory path first');
+                    return;
+                }
+                const result = await api('/api/system/open-folder', {
+                    method: 'POST',
+                    body: { path: dir }
+                });
+                if (result.error) {
+                    showToast('Error: ' + result.error);
+                }
+            });
+        }
+
+        if (!isLastOne) {
+            card.querySelector('.btn-delete-subset').addEventListener('click', (e) => {
+                e.stopPropagation(); // Don't trigger toggle
+                deleteSubset(idx);
+            });
+        }
+
+        container.appendChild(card);
+    });
 }
 
 // ==========================================
@@ -468,6 +647,14 @@ async function saveJob() {
     if (!currentJob) return;
     const config = gatherConfig();
     const dataset = gatherDataset();
+
+    // Prevent duplicate directories
+    const subPaths = dataset.datasets[0].subsets.map(s => s.image_dir.trim().toLowerCase()).filter(p => p !== '');
+    const uniquePaths = new Set(subPaths);
+    if (uniquePaths.size !== subPaths.length) {
+        showToast('Error: Duplicate Image Directories detected. Each subset must have a unique path.');
+        return;
+    }
 
     // Save Config & Dataset
     await api(`/api/jobs/${currentJob}`, {
@@ -627,7 +814,7 @@ function renderPrompts() {
                     <input type="checkbox" class="p-skip" ${p.skip ? 'checked' : ''}> Skip
                 </label>
             </div>
-            <textarea class="p-text" rows="2" placeholder="Enter prompt text...">${escapeHTML(p.text)}</textarea>
+            <textarea class="p-text" rows="2" placeholder="Enter prompt text...">${escapeHtml(p.text)}</textarea>
             <div class="prompt-card-row">
                 <div class="compact-input">
                     <label>W</label>
@@ -744,7 +931,7 @@ function applyGlobalSettings() {
 }
 
 // Helper to escape HTML for textarea
-function escapeHTML(str) {
+function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
@@ -1026,8 +1213,8 @@ function createSampleCard(img, container) {
     }
 
     card.innerHTML = `
-        <img src="${img.path}" alt="${escapeHTML(img.name)}" loading="lazy" draggable="false">
-        <div class="sample-name">${escapeHTML(img.name)}</div>
+        <img src="${img.path}" alt="${escapeHtml(img.name)}" loading="lazy" draggable="false">
+        <div class="sample-name">${escapeHtml(img.name)}</div>
         <button class="btn-delete-card" title="Delete Image">✕</button>
     `;
 
@@ -2001,6 +2188,12 @@ function updateDurationUnit() {
     $('container-sample-every-steps').classList.toggle('hidden', isEpochs);
 }
 
+// Multiple Datasets
+const btnAddDataset = $('btn-add-dataset');
+if (btnAddDataset) {
+    btnAddDataset.addEventListener('click', () => addSubset(true));
+}
+
 // New Job
 $('btn-new-job').addEventListener('click', () => {
     $('new-job-name').value = 'my_job';
@@ -2418,21 +2611,6 @@ $('btn-apply-global').addEventListener('click', applyGlobalSettings);
 $('btn-open-folder').addEventListener('click', async () => {
     if (!currentJob) return;
     await api(`/api/jobs/${currentJob}/open-folder`, { method: 'POST' });
-});
-
-$('btn-open-image-dir').addEventListener('click', async () => {
-    const dir = $('cfg-image-dir').value.trim();
-    if (!dir) {
-        showToast('Please enter a directory path');
-        return;
-    }
-    const result = await api('/api/system/open-folder', {
-        method: 'POST',
-        body: { path: dir }
-    });
-    if (result.error) {
-        showToast('Error: ' + result.error);
-    }
 });
 
 $('btn-clear-logs').addEventListener('click', () => {
