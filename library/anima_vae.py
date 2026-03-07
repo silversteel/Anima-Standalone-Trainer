@@ -539,18 +539,22 @@ class WanVAE_(nn.Module):
             z = z / scale[1] + scale[0]
         iter_ = z.shape[2]
         x = self.conv2(z)
+        # For single frame, skip causal cache to avoid 33 unnecessary .clone() calls
+        use_cache = iter_ > 1
         for i in range(iter_):
             self._conv_idx = [0]
+            cache = self._feat_map if use_cache else None
+            idx = self._conv_idx if use_cache else None
             if i == 0:
                 out = self.decoder(
                     x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx)
+                    feat_cache=cache,
+                    feat_idx=idx)
             else:
                 out_ = self.decoder(
                     x[:, :, i:i + 1, :, :],
-                    feat_cache=self._feat_map,
-                    feat_idx=self._conv_idx)
+                    feat_cache=cache,
+                    feat_idx=idx)
                 out = torch.cat([out, out_], 2)
         self.clear_cache()
         return out
