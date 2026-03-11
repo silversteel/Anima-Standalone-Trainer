@@ -65,6 +65,10 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             ), "when caching Text Encoder output, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used"
 
         assert (
+            args.network_train_unet_only or not args.cache_text_encoder_outputs
+        ), "network for Text Encoder cannot be trained with caching Text Encoder outputs"
+
+        assert (
             args.blocks_to_swap is None or args.blocks_to_swap == 0
         ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing"
 
@@ -175,8 +179,15 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return self.text_encoding_strategy
 
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
-        # Qwen3 text encoder is always frozen for Anima
         pass
+
+    def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
+        # Qwen3Model uses embed_tokens, not text_model.embeddings (CLIP-specific)
+        text_encoder.embed_tokens.requires_grad_(True)
+
+    def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
+        # Qwen3Model uses embed_tokens, not text_model.embeddings (CLIP-specific)
+        text_encoder.embed_tokens.to(dtype=weight_dtype)
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
         if args.cache_text_encoder_outputs:
@@ -184,10 +195,10 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return text_encoders
 
     def get_text_encoders_train_flags(self, args, text_encoders):
-        return [False]  # Qwen3 always frozen
+        return [not args.network_train_unet_only]
 
     def is_train_text_encoder(self, args):
-        return False  # Qwen3 text encoder is always frozen for Anima
+        return not args.network_train_unet_only
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
@@ -489,7 +500,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_sigmoid_scale"] = getattr(args, 'sigmoid_scale', 1.0)
 
     def is_text_encoder_not_needed_for_training(self, args):
-        return args.cache_text_encoder_outputs
+        return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
 
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
