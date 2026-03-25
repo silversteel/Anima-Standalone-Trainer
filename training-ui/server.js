@@ -6,6 +6,7 @@ const TOML = require('@iarna/toml');
 const net = require('net');
 const http = require('http');
 const WebSocket = require('ws');
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -1552,6 +1553,145 @@ app.post('/api/jobs/:name/reset-config', (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// --- Hardware Monitor ---
+
+let prevCpuInfo = null;
+
+function getCpuUsagePct() {
+    const cpus = os.cpus();
+    if (!prevCpuInfo) {
+        prevCpuInfo = cpus;
+        return 0;
+    }
+    let totalDelta = 0, idleDelta = 0;
+    cpus.forEach((cpu, i) => {
+        const prev = prevCpuInfo[i];
+        if (!prev) return;
+        const prevTotal = Object.values(prev.times).reduce((a, b) => a + b, 0);
+        const currTotal = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+        totalDelta += currTotal - prevTotal;
+        idleDelta += cpu.times.idle - prev.times.idle;
+    });
+    prevCpuInfo = cpus;
+    if (totalDelta === 0) return 0;
+    return Math.round((1 - idleDelta / totalDelta) * 100);
+}
+
+async function getCpuTemp() {
+    return new Promise((resolve) => {
+        if (isWindows) {
+            // Query WMI thermal zone (returns tenths of Kelvin)
+            const proc = spawn('powershell', [
+                '-NoProfile', '-NonInteractive', '-Command',
+                'Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature | Select-Object -ExpandProperty CurrentTemperature'
+            ]);
+            let out = '';
+            proc.stdout.on('data', d => out += d);
+            proc.on('close', (code) => {
+                if (code !== 0 || !out.trim()) return resolve(null);
+                try {
+                    // Average across all zones, convert tenths-of-Kelvin → Celsius
+                    const vals = out.trim().split('\n')
+                        .map(l => parseFloat(l.trim()))
+                        .filter(v => !isNaN(v) && v > 0);
+                    if (!vals.length) return resolve(null);
+                    const avgCelsius = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length / 10 - 273.15);
+                    resolve(avgCelsius);
+                } catch (e) { resolve(null); }
+            });
+            proc.on('error', () => resolve(null));
+        } else {
+            // Linux: read from /sys/class/thermal
+            const proc = spawn('bash', ['-c',
+                'paste -sd+ /sys/class/thermal/thermal_zone*/temp 2>/dev/null | bc'
+            ]);
+            let out = '';
+            proc.stdout.on('data', d => out += d);
+            proc.on('close', () => {
+                const val = parseFloat(out.trim());
+                resolve(isNaN(val) ? null : Math.round(val / 1000));
+            });
+            proc.on('error', () => resolve(null));
+        }
+    });
+}
+
+async function getGpuStats() {
+    return new Promise((resolve) => {
+        const smi = spawn('nvidia-smi', [
+            '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu',
+            '--format=csv,noheader,nounits'
+        ]);
+        let stdout = '';
+        smi.stdout.on('data', d => stdout += d);
+        smi.on('close', (code) => {
+            if (code !== 0 || !stdout.trim()) return resolve([]);
+            try {
+                const gpus = stdout.trim().split('\n').map(line => {
+                    const parts = line.split(',').map(s => s.trim());
+                    return {
+                        index: parseInt(parts[0]),
+                        name: parts[1],
+                        util: parseInt(parts[2]) || 0,
+                        memUsed: parseInt(parts[3]) || 0,
+                        memTotal: parseInt(parts[4]) || 0,
+                        temp: parseInt(parts[5]) || 0
+                    };
+                });
+                resolve(gpus);
+            } catch (e) {
+                resolve([]);
+            }
+        });
+        smi.on('error', () => resolve([]));
+    });
+}
+
+setInterval(async () => {
+    if (wss.clients.size === 0) return;
+
+    const cpuPct = getCpuUsagePct();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const [gpus, cpuTemp] = await Promise.all([getGpuStats(), getCpuTemp()]);
+
+    // Mark active GPUs from running jobs
+    const activeGpus = {};
+    for (const [, job] of runningJobs.entries()) {
+        if (job.gpuIds) {
+            job.gpuIds.split(',').forEach(id => {
+                const trimmed = id.trim();
+                if (trimmed) activeGpus[trimmed] = job.type === 'generation' ? 'sampling' : 'training';
+            });
+        }
+    }
+    if (persistentGenProcess && persistentGenProcess.gpuIds) {
+        persistentGenProcess.gpuIds.split(',').forEach(id => {
+            const trimmed = id.trim();
+            if (trimmed) activeGpus[trimmed] = 'sampling';
+        });
+    }
+    gpus.forEach(gpu => {
+        gpu.activity = activeGpus[String(gpu.index)] || null;
+    });
+
+    const payload = JSON.stringify({
+        type: 'hw_stats',
+        data: {
+            cpu: cpuPct,
+            cpuTemp,
+            ram: { total: totalMem, used: totalMem - freeMem },
+            gpus
+        }
+    });
+
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(payload);
+        }
+    });
+}, 2000);
 
 // Prevent server crash on unhandled errors
 process.on('uncaughtException', (err) => {

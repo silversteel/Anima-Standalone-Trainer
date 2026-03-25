@@ -81,6 +81,13 @@ function connectWS() {
     ws.onmessage = (event) => {
         try {
             const msg = JSON.parse(event.data);
+
+            // hw_stats is global (not job-specific)
+            if (msg.type === 'hw_stats') {
+                updateHwMonitor(msg.data);
+                return;
+            }
+
             if (msg.job !== currentJob) return;
 
             if (msg.type === 'log') {
@@ -102,6 +109,150 @@ function subscribeToJob(jobName) {
         ws.send(JSON.stringify({ type: 'subscribe', job: jobName }));
     }
 }
+
+// ==========================================
+//  Hardware Monitor
+// ==========================================
+
+function formatHwBytes(bytes) {
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(0) + ' MB';
+    return bytes + ' B';
+}
+
+function getTempClass(temp) {
+    if (temp >= 80) return 'hw-temp-hot';
+    if (temp >= 65) return 'hw-temp-warm';
+    return 'hw-temp-cool';
+}
+
+function updateHwMonitor(stats) {
+    const container = document.getElementById('hw-stats-container');
+    if (!container) return;
+
+    const cpuPct = Math.max(0, Math.min(100, stats.cpu || 0));
+    const ramPct = stats.ram ? Math.round((stats.ram.used / stats.ram.total) * 100) : 0;
+    const ramUsed = stats.ram ? formatHwBytes(stats.ram.used) : '?';
+    const ramTotal = stats.ram ? formatHwBytes(stats.ram.total) : '?';
+
+    let html = '';
+
+    const cpuTempHtml = (stats.cpuTemp != null)
+        ? `<span class="hw-temp ${getTempClass(stats.cpuTemp)}">${stats.cpuTemp}°C</span>`
+        : '';
+
+    // System section (CPU + RAM)
+    html += `<div class="hw-section">
+        <div class="hw-section-header">
+            <span class="hw-section-title">System</span>
+            ${cpuTempHtml}
+        </div>
+        <div class="hw-row">
+            <span class="hw-metric-label">CPU</span>
+            <div class="hw-bar-wrap"><div class="hw-bar" style="width:${cpuPct}%"></div></div>
+            <span class="hw-metric-value">${cpuPct}%</span>
+        </div>
+        <div class="hw-row">
+            <span class="hw-metric-label">RAM</span>
+            <div class="hw-bar-wrap"><div class="hw-bar hw-bar-ram" style="width:${ramPct}%"></div></div>
+            <span class="hw-metric-value">${ramPct}% &nbsp;${ramUsed} / ${ramTotal}</span>
+        </div>
+    </div>`;
+
+    // GPU sections
+    if (stats.gpus && stats.gpus.length > 0) {
+        stats.gpus.forEach(gpu => {
+            const gpuPct  = Math.max(0, Math.min(100, gpu.util || 0));
+            const vramPct = gpu.memTotal > 0 ? Math.round((gpu.memUsed / gpu.memTotal) * 100) : 0;
+            const vramUsed  = (gpu.memUsed  / 1024).toFixed(1);
+            const vramTotal = (gpu.memTotal / 1024).toFixed(1);
+            const tempClass    = getTempClass(gpu.temp);
+            const activeClass  = gpu.activity ? ' hw-active' : '';
+            const activityBadge = gpu.activity
+                ? `<span class="hw-activity-badge">${gpu.activity}</span>`
+                : '';
+
+            html += `<div class="hw-section hw-section-gpu${activeClass}">
+                <div class="hw-section-header">
+                    <span class="hw-section-title">GPU ${gpu.index}</span>
+                    <span class="hw-temp ${tempClass}">${gpu.temp}°C</span>
+                    ${activityBadge}
+                </div>
+                <div class="hw-row">
+                    <span class="hw-metric-label">Core</span>
+                    <div class="hw-bar-wrap"><div class="hw-bar hw-bar-gpu" style="width:${gpuPct}%"></div></div>
+                    <span class="hw-metric-value">${gpuPct}%</span>
+                </div>
+                <div class="hw-row">
+                    <span class="hw-metric-label">VRAM</span>
+                    <div class="hw-bar-wrap"><div class="hw-bar hw-bar-vram" style="width:${vramPct}%"></div></div>
+                    <span class="hw-metric-value">${vramPct}% &nbsp;${vramUsed} / ${vramTotal} GB</span>
+                </div>
+            </div>`;
+        });
+    }
+
+    container.innerHTML = html;
+
+    // Compact bar (collapsed view)
+    const compact = document.getElementById('hw-compact-bar');
+    if (compact) {
+        let ch = `<div class="hw-compact-item">
+            <span class="hw-compact-label">CPU</span>
+            <span>${cpuPct}%${stats.cpuTemp != null ? ` · <span class="hw-temp ${getTempClass(stats.cpuTemp)}">${stats.cpuTemp}°C</span>` : ''}</span>
+        </div>
+        <div class="hw-compact-item">
+            <span class="hw-compact-label">RAM</span>
+            <span>${ramUsed} / ${ramTotal}</span>
+        </div>`;
+
+        if (stats.gpus && stats.gpus.length > 0) {
+            stats.gpus.forEach(gpu => {
+                const gpuPct  = Math.max(0, Math.min(100, gpu.util || 0));
+                const vramUsed  = (gpu.memUsed  / 1024).toFixed(1);
+                const vramTotal = (gpu.memTotal / 1024).toFixed(1);
+                const tempClass = getTempClass(gpu.temp);
+                const badge = gpu.activity ? ` <span class="hw-activity-badge">${gpu.activity}</span>` : '';
+                ch += `<div class="hw-compact-sep"></div>
+                <div class="hw-compact-item">
+                    <span class="hw-compact-label">GPU ${gpu.index}</span>
+                    <span>${gpuPct}% · ${vramUsed}/${vramTotal}GB · <span class="hw-temp ${tempClass}">${gpu.temp}°C</span>${badge}</span>
+                </div>`;
+            });
+        }
+
+        compact.innerHTML = ch;
+    }
+}
+
+// Keep tab-content padding in sync with monitor height + handle collapse
+(function initHwMonitorResize() {
+    const monitor = document.getElementById('hw-monitor');
+    const toggleBtn = document.getElementById('hw-toggle');
+    if (!monitor) return;
+
+    function syncToggleArrow(isCollapsed) {
+        if (toggleBtn) toggleBtn.textContent = isCollapsed ? '▲  Hardware Monitor' : '▼';
+    }
+
+    // Restore collapsed state
+    const collapsed = localStorage.getItem('hw_monitor_collapsed') === 'true';
+    if (collapsed) monitor.classList.add('hw-collapsed');
+    syncToggleArrow(collapsed);
+
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            const isNowCollapsed = monitor.classList.toggle('hw-collapsed');
+            localStorage.setItem('hw_monitor_collapsed', isNowCollapsed);
+            syncToggleArrow(isNowCollapsed);
+        });
+    }
+
+    if (!window.ResizeObserver) return;
+    new ResizeObserver(() => {
+        document.documentElement.style.setProperty('--hw-bar-height', (monitor.offsetHeight + 6) + 'px');
+    }).observe(monitor);
+})()
 
 // ==========================================
 //  Job List

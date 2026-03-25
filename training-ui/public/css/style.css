@@ -1129,7 +1129,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 100;
+    z-index: 200;
 }
 
 .modal-content {
@@ -1402,4 +1402,247 @@ body {
 input:disabled, select:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+}
+
+/* === Hardware Monitor Bar === */
+.hw-monitor {
+    position: fixed;
+    bottom: 0;
+    left: 280px;
+    right: 0;
+    z-index: 50;
+    background: transparent;
+    border-top: 1px solid var(--border);
+    padding: 5px 4px;
+    display: flex;
+    align-items: flex-start;
+}
+
+.hw-monitor::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--bg-secondary);
+    opacity: 0.55;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+    z-index: -1;
+}
+
+.hw-monitor:hover::before {
+    opacity: 1;
+}
+
+/* Toggle tab — right side, sits on the top border */
+.hw-toggle {
+    position: absolute;
+    top: -20px;
+    right: 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    color: var(--text-muted);
+    font-size: 0.6rem;
+    line-height: 1;
+    padding: 3px 10px 4px;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+    z-index: 1;
+}
+
+.app.has-bg .hw-toggle {
+    background: var(--glass-sidebar);
+    backdrop-filter: blur(var(--bg-blur, 10px));
+    -webkit-backdrop-filter: blur(var(--bg-blur, 10px));
+}
+
+.hw-toggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+/* Collapsed: hide full cards, show compact bar instead */
+.hw-monitor.hw-collapsed .hw-stats-container {
+    display: none;
+}
+
+.hw-monitor.hw-collapsed .hw-compact-bar {
+    display: flex;
+}
+
+/* Compact bar (shown when collapsed) */
+.hw-compact-bar {
+    display: none;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+    width: 100%;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+}
+
+.hw-compact-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.hw-compact-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.hw-compact-sep {
+    width: 1px;
+    height: 14px;
+    background: var(--border);
+    flex-shrink: 0;
+}
+
+.app.has-bg .hw-monitor::before {
+    background: var(--glass-sidebar);
+    backdrop-filter: blur(var(--bg-blur, 10px));
+    -webkit-backdrop-filter: blur(var(--bg-blur, 10px));
+}
+
+.hw-stats-container {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    width: 100%;
+    gap: 0;
+}
+
+.hw-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 16px 5px 10px;
+    border-right: 1px solid var(--border);
+    min-width: 200px;
+}
+
+.hw-section:last-child {
+    border-right: none;
+}
+
+.hw-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 1px;
+}
+
+.hw-section-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.hw-section-gpu .hw-section-title {
+    color: var(--text-primary);
+}
+
+.hw-section-gpu.hw-active .hw-section-title {
+    color: var(--accent);
+}
+
+.hw-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hw-metric-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    min-width: 34px;
+    white-space: nowrap;
+}
+
+.hw-bar-wrap {
+    width: 72px;
+    height: 5px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.hw-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 1.2s ease;
+}
+
+.hw-bar-ram {
+    background: var(--accent);
+    opacity: 0.75;
+}
+
+.hw-bar-gpu {
+    background: var(--success);
+}
+
+.hw-bar-vram {
+    background: var(--warning);
+}
+
+.hw-metric-value {
+    font-size: 0.71rem;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.hw-temp {
+    font-size: 0.68rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.hw-temp-cool { color: var(--success); }
+.hw-temp-warm { color: var(--warning); }
+.hw-temp-hot  { color: var(--danger);  }
+
+.hw-activity-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    border-radius: 3px;
+    padding: 1px 5px;
+    letter-spacing: 0.03em;
+    background: var(--warning);
+    color: #000;
+    white-space: nowrap;
+}
+
+.hw-loading {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    padding: 6px 10px;
+}
+
+/* Bottom padding adjusts dynamically via --hw-bar-height CSS variable set by JS */
+.tab-content {
+    padding-bottom: max(38px, var(--hw-bar-height, 38px));
 }
