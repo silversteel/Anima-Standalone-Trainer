@@ -501,7 +501,8 @@ function populateDataset(dataset) {
         caption_dropout_rate: s.caption_dropout_rate ?? 0.05,
         caption_tag_dropout_rate: s.caption_tag_dropout_rate ?? 0.0,
         caption_dropout_every_n_epochs: s.caption_dropout_every_n_epochs ?? 0,
-        shuffle_caption: s.shuffle_caption ?? false
+        shuffle_caption: s.shuffle_caption ?? false,
+        is_reg: s.is_reg ?? false
     }));
 
     // Edge case: if empty, force at least 1
@@ -655,6 +656,7 @@ function gatherDataset() {
                     caption_dropout_every_n_epochs: safeInt(s.caption_dropout_every_n_epochs),
                     shuffle_caption: s.shuffle_caption
                 };
+                if (s.is_reg) subset.is_reg = true;
                 if ($('cfg-alpha-mask').checked) subset.alpha_mask = true;
                 return subset;
             })
@@ -677,6 +679,7 @@ function addSubset(shouldRender = true) {
         caption_tag_dropout_rate: 0.0,
         caption_dropout_every_n_epochs: 0,
         shuffle_caption: false,
+        is_reg: false,
         collapsed: false
     });
     if (shouldRender) {
@@ -712,7 +715,7 @@ function renderSubsets() {
             <div class="prompt-card-header" style="justify-content: space-between; align-items: center; border-bottom: ${isCollapsed ? 'none' : '1px solid var(--border)'}; padding-bottom: ${isCollapsed ? '0' : '8px'}; margin-bottom: ${isCollapsed ? '0' : '12px'};">
                 <div style="display: flex; align-items: center; gap: 10px; cursor: pointer; flex: 1;" class="subset-toggle">
                     <span style="font-size: 0.8rem; transition: transform 0.2s; transform: rotate(${isCollapsed ? '-90deg' : '0deg'})">▼</span>
-                    <label style="font-weight: 600; cursor: pointer;">Dataset ${idx + 1} <span style="font-weight: normal; font-size: 0.8rem; color: var(--text-muted); margin-left: 10px;">${isCollapsed ? '(' + dirName + ')' : ''}</span></label>
+                    <label style="font-weight: 600; cursor: pointer;">Dataset ${idx + 1} ${subset.is_reg ? '<span style="font-size: 0.7rem; color: var(--text-muted); background: var(--border); padding: 1px 6px; border-radius: 4px; margin-left: 6px;">REG</span>' : ''}<span style="font-weight: normal; font-size: 0.8rem; color: var(--text-muted); margin-left: 10px;">${isCollapsed ? '(' + dirName + ')' : ''}</span></label>
                 </div>
                 <button class="btn btn-ghost btn-sm btn-delete-subset" title="Delete Dataset" 
                     ${isLastOne ? 'disabled' : ''} 
@@ -773,6 +776,11 @@ function renderSubsets() {
                         <label style="font-size: 0.8rem;"><input type="checkbox" class="sub-flip-aug" ${subset.flip_aug ? 'checked' : ''}> Flip Augmentations</label>
                     </div>
                 </div>
+
+                <div class="form-group" style="margin-top: 10px;">
+                    <label style="font-size: 0.8rem;"><input type="checkbox" class="sub-is-reg" ${subset.is_reg ? 'checked' : ''}> Regularization Dataset</label>
+                    <small style="display:block; font-size: 0.7rem; color: var(--text-muted);">Images in this folder are used as regularization (class images) to prevent overfitting.</small>
+                </div>
             </div>
         `;
 
@@ -795,6 +803,7 @@ function renderSubsets() {
                     subset.caption_dropout_every_n_epochs = card.querySelector('.sub-dropout-every-n').value;
                     subset.shuffle_caption = card.querySelector('.sub-shuffle-caption').checked;
                     subset.flip_aug = card.querySelector('.sub-flip-aug').checked;
+                    subset.is_reg = card.querySelector('.sub-is-reg').checked;
                     checkDirty();
                 });
             });
