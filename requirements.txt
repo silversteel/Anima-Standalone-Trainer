@@ -53,6 +53,7 @@ sentencepiece==0.2.1
 flask
 wandb
 setuptools==80.0.0
+./cuda_direct_backend
 
 -e .
 
