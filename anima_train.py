@@ -710,12 +710,11 @@ class AnimaTrainer:
             logger.info(f"vae device: {next(vae.parameters()).device}")
 
         loss_recorder = train_util.LossRecorder()
+        profiler = StepProfiler(accelerator, args.step_profile, getattr(args, "profile_microbatch", False))
         epoch = 0
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
-
-            profiler = StepProfiler(accelerator, args.step_profile)
 
             for m in training_models:
                 m.train()
@@ -830,7 +829,9 @@ class AnimaTrainer:
 
                     profiler.on_fwd_done()
                     accelerator.backward(loss)
+                    profiler.on_bwd_done()
                     self.sync_gradients(dit)
+                    profiler.on_comm_done()
 
                     if not (args.fused_backward_pass or args.blockwise_fused_optimizers):
                         if accelerator.sync_gradients and args.max_grad_norm != 0.0:
@@ -839,14 +840,10 @@ class AnimaTrainer:
                                 params_to_clip.extend(m.parameters())
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                        profiler.on_bwd_done()
-
                         optimizer.step()
                         lr_scheduler.step()
                         optimizer.zero_grad(set_to_none=True)
                     else:
-                        profiler.on_bwd_done()
-
                         # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
                         lr_scheduler.step()
                         if args.blockwise_fused_optimizers:

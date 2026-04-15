@@ -1338,6 +1338,7 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
             buildEnvVar('PYTHONIOENCODING', 'utf-8'),
             gpuEnv,
             mergedConfig.training_arguments?.step_profile ? buildEnvVar('STEP_PROFILE', '1') : '',
+            mergedConfig.training_arguments?.profile_microbatch ? buildEnvVar('PROFILE_MICROBATCH', '1') : '',
             (isWindows && isMultiGpu) ? buildEnvVar('USE_LIBUV', '0') : '',
             (isWindows && isMultiGpu) ? buildEnvVar('MASTER_ADDR', '127.0.0.1') : '',
             (isWindows && isMultiGpu) ? buildEnvVar('MASTER_PORT', '29500') : ''

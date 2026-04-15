@@ -687,7 +687,7 @@ class LatentsCachingStrategy:
             try:
                 with safe_open(safetensors_path, framework="pt") as f:
                     for key in f.keys():
-                        tensors[key] = f.get_tensor(key)
+                        tensors[key] = f.get_tensor(key).clone()
                     for key, val in f.metadata().items():
                         metadata[key] = val
             except Exception:

@@ -29,6 +29,8 @@ from diffusers import DDPMScheduler
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from library import deepspeed_utils, model_util, sai_model_spec, save_utils, strategy_base, strategy_sd
 
+import copy
+
 import library.train_util as train_util
 from library.train_util import DreamBoothDataset
 import library.config_util as config_util
@@ -53,6 +55,89 @@ setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Progressive resolution schedule helpers
+# ---------------------------------------------------------------------------
+
+def _parse_resolution_schedule(schedule_str: str, total_steps: int):
+    """Parse resolution_schedule arg into a list of (resolution, step_end) tuples.
+
+    Format: "RES:FRAC,RES:FRAC,..."  e.g. "512:0.4,1024:0.3,1536:0.3"
+    The last phase absorbs any rounding remainder so step_end[-1] == total_steps.
+    """
+    phases = []
+    parts = [p.strip() for p in schedule_str.split(",")]
+    accumulated = 0
+    for i, part in enumerate(parts):
+        reso_str, frac_str = part.split(":")
+        reso = int(reso_str.strip())
+        frac = float(frac_str.strip())
+        if i == len(parts) - 1:
+            step_end = total_steps  # absorb remainder
+        else:
+            step_end = accumulated + round(frac * total_steps)
+        phases.append((reso, step_end))
+        accumulated = step_end
+    return phases  # e.g. [(512, 400), (1024, 700), (1536, 1000)]
+
+
+def _build_phase_dataset_group(
+    args,
+    phase_reso: int,
+    blueprint_generator,
+    use_user_config: bool,
+    use_dreambooth_method: bool,
+    user_config: dict,
+):
+    """Build a DatasetGroup for a single resolution phase.
+
+    When the user defined separate [[datasets]] sections per resolution (the
+    multi-resolution TOML pattern), only the section(s) whose resolution matches
+    phase_reso are kept.  This preserves per-section settings like batch_size.
+
+    When no section explicitly declares a matching resolution (single-dataset
+    configs or DreamBooth/fine-tuning without a dataset TOML), all sections
+    have their resolution overridden to phase_reso — the original behaviour.
+    """
+    phase_args = copy.copy(args)
+    phase_args.resolution = phase_reso
+    phase_args.max_bucket_reso = phase_reso
+
+    phase_user_config = copy.deepcopy(user_config)
+
+    def _reso_matches(ds_cfg):
+        """Return True if the dataset config explicitly targets phase_reso."""
+        r = ds_cfg.get("resolution")
+        if r is None:
+            return False
+        if isinstance(r, (list, tuple)):
+            return len(r) == 2 and int(r[0]) == phase_reso and int(r[1]) == phase_reso
+        return int(r) == phase_reso
+
+    if use_user_config:
+        datasets = phase_user_config.get("datasets", [])
+        matching = [ds for ds in datasets if _reso_matches(ds)]
+        if matching:
+            # Use only the section(s) designed for this resolution.
+            # Their batch_size and other per-section settings are preserved as-is.
+            phase_user_config["datasets"] = matching
+        else:
+            # No explicit-resolution sections found (e.g. single-dataset config).
+            # Fall back: override resolution on all sections.
+            for ds_cfg in datasets:
+                ds_cfg["resolution"] = phase_reso
+                ds_cfg["max_bucket_reso"] = phase_reso
+    else:
+        # DreamBooth / fine-tuning without a dataset TOML — always override.
+        for ds_cfg in phase_user_config.get("datasets", []):
+            ds_cfg["resolution"] = phase_reso
+            ds_cfg["max_bucket_reso"] = phase_reso
+
+    blueprint = blueprint_generator.generate(phase_user_config, phase_args)
+    phase_dataset_group, _ = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+    return phase_dataset_group
 
 
 class NetworkTrainer:
@@ -210,10 +295,6 @@ class NetworkTrainer:
         return None
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
-        """
-        Returns a list of models that will be used for text encoding. SDXL uses wrapped and unwrapped models.
-        FLUX.1 and SD3 may cache some outputs of the text encoder, so return the models that will be used for encoding (not cached).
-        """
         return text_encoders
 
     # returns a list of bool values indicating whether each text encoder should be trained
@@ -237,8 +318,6 @@ class NetworkTrainer:
             return
 
         # Batched all-reduce: flatten all grads into a single buffer, reduce once, scatter back.
-        # The original per-parameter approach caused hundreds of round-trips through the
-        # communication backend (~50s/step). This brings it down to a single call (~0.5s).
         grads = []
         shapes = []
         for param in network.parameters():
@@ -588,10 +667,28 @@ class NetworkTrainer:
 
             blueprint = blueprint_generator.generate(user_config, args)
             train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+
+            # Build phase dataset groups now (before latent caching)
+            _phase_dataset_groups = []
+            _phase_fracs = []
+            if getattr(args, "resolution_schedule", None) and args.dataset_class is None:
+                # Step ends are computed later once max_train_steps is finalised.
+                _phase_fracs = [(int(p.split(":")[0].strip()), float(p.split(":")[1].strip()))
+                                for p in args.resolution_schedule.split(",")]
+                for phase_reso, _ in _phase_fracs:
+                    logger.info(f"[resolution_schedule] building dataset for {phase_reso}px phase")
+                    _phase_dataset_groups.append(
+                        _build_phase_dataset_group(
+                            args, phase_reso, blueprint_generator,
+                            use_user_config, use_dreambooth_method, user_config,
+                        )
+                    )
         else:
             # use arbitrary dataset class
             train_dataset_group = train_util.load_arbitrary_dataset(args)
             val_dataset_group = None  # placeholder until validation dataset supported for arbitrary
+            _phase_dataset_groups = []
+            _phase_fracs = []
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
@@ -651,6 +748,11 @@ class NetworkTrainer:
             if val_dataset_group is not None:
                 val_dataset_group.new_cache_latents(vae, accelerator)
 
+            # Cache latents for all resolution-schedule phases
+            for _pds in _phase_dataset_groups:
+                logger.info(f"[resolution_schedule] caching latents for phase dataset (reso={_pds.datasets[0].width})")
+                _pds.new_cache_latents(vae, accelerator)
+
             vae.to("cpu")
             clean_memory_on_device(accelerator.device)
 
@@ -667,6 +769,15 @@ class NetworkTrainer:
         self.cache_text_encoder_outputs_if_needed(args, accelerator, unet, vae, text_encoders, train_dataset_group, weight_dtype)
         if val_dataset_group is not None:
             self.cache_text_encoder_outputs_if_needed(args, accelerator, unet, vae, text_encoders, val_dataset_group, weight_dtype)
+
+        # For resolution schedule phases
+        if _phase_dataset_groups:
+            te_strategy = strategy_base.TextEncoderOutputsCachingStrategy.get_strategy()
+            if te_strategy is not None and te_strategy.cache_to_disk:
+                for _pds in _phase_dataset_groups:
+                    for _ds in _pds.datasets:
+                        for _info in _ds.image_data.values():
+                            _info.text_encoder_outputs_npz = te_strategy.get_outputs_npz_path(_info.absolute_path)
 
         if unet is None:
             # lazy load unet if needed. text encoders may be freed or replaced with dummy models for saving memory
@@ -819,6 +930,26 @@ class NetworkTrainer:
             persistent_workers=args.persistent_data_loader_workers,
         )
 
+        # Build raw phase DataLoaders; they are prepared after
+        # accelerator.prepare() is called on the main objects below.
+        _phase_dataloaders_raw = []
+        for _pds in _phase_dataset_groups:
+            _pds.set_current_strategies()
+            _phase_collator = train_util.collator_class(
+                current_epoch, current_step,
+                _pds if args.max_data_loader_n_workers == 0 else None,
+            )
+            _phase_dataloaders_raw.append(
+                torch.utils.data.DataLoader(
+                    _pds,
+                    batch_size=1,
+                    shuffle=not getattr(args, "disable_bucket_shuffle", False),
+                    collate_fn=_phase_collator,
+                    num_workers=n_workers,
+                    persistent_workers=args.persistent_data_loader_workers,
+                )
+            )
+
         # 学習ステップ数を計算する
         if args.max_train_epochs is not None:
             args.max_train_steps = args.max_train_epochs * math.ceil(
@@ -927,8 +1058,6 @@ class NetworkTrainer:
             elif is_fsdp:
                 # FSDP: wrap frozen text encoders so they are sharded too.
                 # Guard: skip encoders already on CPU (e.g. after output caching).
-                # sync_module_states causes FSDP to reconstruct any wrapped model on GPU,
-                # which would undo deliberate CPU offloading of the text encoder.
                 text_encoders = [
                     accelerator.prepare(t_enc) if t_enc.device.type != "cpu" else t_enc
                     for t_enc in text_encoders
@@ -941,9 +1070,6 @@ class NetworkTrainer:
                 pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
 
             # When FSDP is active, the LoRA network must NOT be wrapped by FSDP.
-            # It is injected as hooks inside the base model and uses manual gradient
-            # sync via all_reduce_network(). FSDP would shard its tiny weights and
-            # cause shape mismatches with the unsplit activations from the base model.
             if is_fsdp:
                 network.to(accelerator.device)
                 optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
@@ -954,6 +1080,9 @@ class NetworkTrainer:
                     network, optimizer, train_dataloader, val_dataloader, lr_scheduler
                 )
             training_model = network
+
+        # Prepare phase DataLoaders individually
+        phase_dataloaders = [accelerator.prepare(dl) for dl in _phase_dataloaders_raw]
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -1011,6 +1140,17 @@ class NetworkTrainer:
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
             args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
+
+        # Finalise resolution schedule phase step-ends now that max_train_steps is known.
+        phases = []  # [(resolution, step_end), ...]
+        if phase_dataloaders:
+            phases = _parse_resolution_schedule(args.resolution_schedule, args.max_train_steps)
+            assert len(phases) == len(phase_dataloaders), "resolution_schedule phase count mismatch"
+            accelerator.print("[resolution_schedule] phases:")
+            prev = 0
+            for reso, end in phases:
+                accelerator.print(f"  {reso}px: steps {prev}–{end-1}  ({end - prev} steps)")
+                prev = end
 
         # 学習する
         # TODO: find a way to handle total batch size when there are multiple datasets
@@ -1435,24 +1575,100 @@ class NetworkTrainer:
                     torch.cuda.set_rng_state(gpu_rng_state)
             random.setstate(python_rng_state)
 
+        profiler = StepProfiler(accelerator, args.step_profile, getattr(args, "profile_microbatch", False))
+
+        # Phase state for resolution schedule (unused when phases is empty)
+        _ph_idx = 0
+        _ph_dl = phase_dataloaders[0] if phase_dataloaders else None
+        _ph_iter = iter(_ph_dl) if _ph_dl is not None else None
+
+        if phase_dataloaders and global_step > 0:
+            # Advance phase state to current global_step
+            new_idx = len(phases) - 1
+            for i, (_, end) in enumerate(phases):
+                if global_step < end:
+                    new_idx = i
+                    break
+            if new_idx != _ph_idx:
+                _ph_idx = new_idx
+                _ph_dl = phase_dataloaders[_ph_idx]
+                _ph_iter = iter(_ph_dl)
+            
+            # The absolute start step of the current phase
+            phase_start_step = 0
+            if _ph_idx > 0:
+                phase_start_step = phases[_ph_idx - 1][1]
+            
+            global_step_in_phase = global_step - phase_start_step
+            phase_batches_to_skip = (global_step_in_phase * args.gradient_accumulation_steps) % len(_ph_dl)
+            
+            # Skip already-processed batches within the resumed phase dataloader
+            if phase_batches_to_skip > 0:
+                accelerator.print(f"Skipping {phase_batches_to_skip} batches in resumed phase {_ph_idx + 1} dataloader...")
+                for _ in range(phase_batches_to_skip):
+                    try:
+                        next(_ph_iter)
+                    except StopIteration:
+                        _ph_iter = iter(_ph_dl)
+                        next(_ph_iter)
+
+        def _phase_batch_gen():
+            """Per-epoch generator
+            """
+            nonlocal _ph_idx, _ph_dl, _ph_iter, initial_step
+
+            start_step = 0
+            if initial_step > 0:
+                start_step = initial_step
+                initial_step = 0
+
+            for step in range(start_step, len(train_dataloader)):
+                if global_step >= args.max_train_steps:
+                    return
+                # Determine which phase global_step belongs to
+                new_idx = len(phases) - 1
+                for i, (_, end) in enumerate(phases):
+                    if global_step < end:
+                        new_idx = i
+                        break
+                if new_idx != _ph_idx:
+                    _ph_idx = new_idx
+                    _ph_dl = phase_dataloaders[_ph_idx]
+                    _ph_iter = iter(_ph_dl)
+                    reso = phases[_ph_idx][0]
+                    accelerator.print(
+                        f"\n[resolution_schedule] phase {_ph_idx + 1}/{len(phases)}: "
+                        f"{reso}px  (step {global_step})"
+                    )
+                batch = next(_ph_iter, None)
+                if batch is None:           # dataset exhausted before phase ends → restart
+                    _ph_iter = iter(_ph_dl)
+                    batch = next(_ph_iter)
+                yield step, batch
+
         for epoch in range(epoch_to_start, num_train_epochs):
+            if phase_dataloaders and global_step >= args.max_train_steps:
+                break
+
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)  # network.train() is called here
 
-            profiler = StepProfiler(accelerator, args.step_profile)
-
             # TRAINING
-            skipped_dataloader = None
-            if initial_step > 0:
-                skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
-                initial_step = 1
-
-            for step, batch in enumerate(skipped_dataloader or train_dataloader):
-                current_step.value = global_step
+            if phase_dataloaders:
+                batch_source = _phase_batch_gen()
+            else:
+                skipped_dataloader = None
                 if initial_step > 0:
+                    skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
+                    initial_step = 1
+                batch_source = enumerate(skipped_dataloader or train_dataloader)
+
+            for step, batch in batch_source:
+                current_step.value = global_step
+                if not phase_dataloaders and initial_step > 0:
                     initial_step -= 1
                     continue
 
@@ -1579,8 +1795,7 @@ class NetworkTrainer:
                     )
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
-                # VALIDATION PER STEP: global_step is already incremented
-                # for example, if validate_every_n_steps=100, validate at step 100, 200, 300, ...
+                # VALIDATION PER STEP
                 should_validate_step = args.validate_every_n_steps is not None and global_step % args.validate_every_n_steps == 0
                 if accelerator.sync_gradients and validation_steps > 0 and should_validate_step:
                     optimizer_eval_fn()
@@ -1946,6 +2161,17 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
+    )
+    parser.add_argument(
+        "--resolution_schedule",
+        type=str,
+        default=None,
+        help=(
+            "Progressive resolution schedule: train at each resolution for a fraction of total steps. "
+            "Format: 'RES:FRAC,RES:FRAC,...' e.g. '512:0.4,1024:0.3,1536:0.3'. "
+            "Fractions should sum to 1.0. Resolutions are trained sequentially (low→high). "
+            "Requires --max_train_steps (not --max_train_epochs)."
+        ),
     )
     return parser
 

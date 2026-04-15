@@ -347,11 +347,10 @@ def train(args):
         accelerator.log({}, step=0)
 
     loss_recorder = train_util.LossRecorder()
+    profiler = StepProfiler(accelerator, args.step_profile, getattr(args, "profile_microbatch", False))
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1
-
-        profiler = StepProfiler(accelerator, args.step_profile)
 
         for m in training_models:
             m.train()

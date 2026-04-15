@@ -128,6 +128,7 @@
                                     <option value="constant">Constant</option>
                                     <option value="linear">Linear</option>
                                     <option value="cosine_with_restarts">Cosine w/ Restarts</option>
+                                    <option value="cosine_with_min_lr">Cosine w/ Min LR</option>
                                     <option value="polynomial">Polynomial</option>
                                 </select>
                             </div>
@@ -144,6 +145,20 @@
                             <div class="form-group">
                                 <label>Seed</label>
                                 <input type="number" id="cfg-seed" value="42">
+                            </div>
+                        </div>
+                        <div class="form-row hidden" id="group-lr-scheduler-cycles">
+                            <div class="form-group">
+                                <label>Restart Cycles</label>
+                                <input type="number" id="cfg-lr-scheduler-cycles" value="1" min="1">
+                                <small>Number of times the learning rate restarts from max to min.</small>
+                            </div>
+                        </div>
+                        <div class="form-row hidden" id="group-lr-min-ratio">
+                            <div class="form-group">
+                                <label>Min LR Ratio</label>
+                                <input type="number" id="cfg-lr-min-ratio" value="0" min="0" max="1" step="0.01">
+                                <small>Minimum LR as a fraction of the initial LR (e.g. 0.1 = decays to 10%).</small>
                             </div>
                         </div>
                         <div class="form-row hidden" id="group-decouple">
@@ -311,13 +326,26 @@
                         <h4>Global Dataset Settings</h4>
                         <div class="form-row">
                             <div class="form-group">
-                                <label>Resolution</label>
-                                <input type="number" id="cfg-resolution" value="1536" min="256" step="64">
-                                <small>Max resolution for bucketing (square).</small>
+                                <label>Resolution(s)</label>
+                                <input type="text" id="cfg-resolution" value="1536" placeholder="e.g. 512, 1024, 1536">
+                                <small>Max resolution(s) for bucketing. Comma-separate for multi-resolution caching (e.g. 512, 1024).</small>
                             </div>
                             <div class="form-group">
-                                <label>Batch Size</label>
-                                <input type="number" id="cfg-batch-size" value="4" min="1">
+                                <label>Batch Size(s)</label>
+                                <input type="text" id="cfg-batch-size" value="4" placeholder="e.g. 4, 2, 1">
+                                <small>Comma-separate to assign varying batch sizes per resolution.</small>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label><input type="checkbox" id="cfg-progressive-reso"> Progressive Resolution Schedule</label>
+                            <small>Train at each resolution sequentially (low → high) instead of mixing them. Requires at least 2 resolutions above. Works with both epochs and max steps.</small>
+
+                            <div id="progressive-reso-panel" class="hidden" style="margin-left: 20px; margin-top: 15px; display: flex; flex-direction: column; gap: 12px; padding-left: 15px; border-left: 2px solid var(--border);">
+                                <div id="progressive-reso-phases">
+                                    <!-- Populated dynamically -->
+                                </div>
+                                <small id="progressive-reso-sum-hint">Each fraction is the portion of total steps for that resolution. Must sum to 1.0.</small>
                             </div>
                         </div>
                         <div class="form-row">
@@ -695,6 +723,10 @@
                         <div class="form-group">
                             <label><input type="checkbox" id="cfg-step-profile"> Enable Step Profiling</label>
                             <small>Prints per-step timing breakdown (forward, backward, communication, optimizer, Python overhead) to the training log.</small>
+                        </div>
+                        <div class="form-group" id="cfg-profile-microbatch-group" style="display:none; padding-left: 16px;">
+                            <label><input type="checkbox" id="cfg-profile-microbatch"> Track Microbatches</label>
+                            <small>Also print per-microbatch fwd/bwd times within each step (only available with step profiling enabled).</small>
                         </div>
                     </div>
 

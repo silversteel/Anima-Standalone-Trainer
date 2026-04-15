@@ -55,7 +55,7 @@ async function api(url, opts = {}) {
     try {
       const err = await res.json();
       msg = err.error || msg;
-    } catch (_) {}
+    } catch (_) { }
     throw new Error(msg);
   }
   return res.json();
@@ -86,7 +86,7 @@ function connectWS() {
         if (msg.data === "generating") return; // Ignore generation status for Training button
         updateRunningState(msg.data === "running");
       }
-    } catch (e) {}
+    } catch (e) { }
   };
   ws.onclose = () => {
     setTimeout(connectWS, 3000);
@@ -324,7 +324,7 @@ function updateRunningState(running) {
   });
 }
 // ==========================================
-//  Config ÃÂ¢Ã¢ÂÂ ” UI Mapping
+//  Config UI Mapping
 // ==========================================
 function populateConfig(config) {
   const t = config.training_arguments || {};
@@ -336,6 +336,8 @@ function populateConfig(config) {
   $("cfg-optimizer").value = t.optimizer_type || "AdamW8bit";
   $("cfg-lr-scheduler").value = t.lr_scheduler || "cosine";
   $("cfg-lr-warmup").value = t.lr_warmup_steps ?? 100;
+  $("cfg-lr-scheduler-cycles").value = t.lr_scheduler_num_cycles ?? 1;
+  $("cfg-lr-min-ratio").value = t.lr_scheduler_min_lr_ratio ?? 0;
   $("cfg-seed").value = t.seed ?? 42;
   // Extract weight decay
   let wdValue = "0";
@@ -358,6 +360,7 @@ function populateConfig(config) {
   $("cfg-decouple").checked = decoupleValue;
   // Update conditional visibility
   updateOptimizerOptions();
+  updateLrSchedulerOptions();
   const maxSteps = t.max_train_steps;
   const isSteps = maxSteps && maxSteps > 0;
   document.querySelector(
@@ -394,6 +397,17 @@ function populateConfig(config) {
   $("cfg-vae-batch").value = t.vae_batch_size ?? 1;
   $("cfg-cache-te").checked = t.cache_text_encoder_outputs_to_disk ?? true;
   $("cfg-disable-bucket-shuffle").checked = t.disable_bucket_shuffle ?? false;
+  // Progressive resolution schedule
+  if (t.resolution_schedule) {
+    $("cfg-progressive-reso").checked = true;
+    $("progressive-reso-panel").classList.remove("hidden");
+    // Parse schedule string and populate fraction inputs after rendering phases
+    window._pendingProgressiveSchedule = t.resolution_schedule;
+  } else {
+    $("cfg-progressive-reso").checked = false;
+    $("progressive-reso-panel").classList.add("hidden");
+    window._pendingProgressiveSchedule = null;
+  }
   $("cfg-use-cuda-direct").checked = t.use_cuda_direct ?? false;
   $("cfg-ddp-gradient-as-bucket-view").checked =
     t.ddp_gradient_as_bucket_view ?? false;
@@ -426,6 +440,8 @@ function populateConfig(config) {
     $("cfg-fsdp-auto-wrap-policy").value !== "SIZE_BASED_WRAP",
   );
   $("cfg-step-profile").checked = t.step_profile ?? false;
+  $("cfg-profile-microbatch").checked = t.profile_microbatch ?? false;
+  $("cfg-profile-microbatch-group").style.display = (t.step_profile ?? false) ? "" : "none";
   // Check GPU boxes based on config
   const savedIds = (config.gpu_ids || "")
     .split(",")
@@ -462,17 +478,21 @@ function populateConfig(config) {
 }
 function populateDataset(dataset) {
   const g = dataset.general || {};
-  let d = {};
+  let dArray = [];
   if (Array.isArray(dataset.datasets)) {
-    d = dataset.datasets[0] || {};
+    dArray = dataset.datasets;
   } else if (dataset.datasets) {
-    d = dataset.datasets;
+    dArray = [dataset.datasets];
   }
-  const res = Array.isArray(d.resolution)
-    ? d.resolution[0]
-    : d.resolution || 1536;
-  $("cfg-resolution").value = res;
-  $("cfg-batch-size").value = d.batch_size ?? 4;
+  if (dArray.length === 0) dArray = [{}];
+
+  const resArray = dArray.map(d => Array.isArray(d.resolution) ? d.resolution[0] : (d.resolution || 1536));
+  const batchArray = dArray.map(d => d.batch_size ?? 4);
+
+  $("cfg-resolution").value = resArray.join(", ");
+  $("cfg-batch-size").value = batchArray.join(", ");
+
+  const d = dArray[0];
   $("cfg-caption-ext").value = d.caption_extension || ".txt";
   $("cfg-enable-bucket").checked = g.enable_bucket ?? true;
   $("cfg-bucket-no-upscale").checked = g.bucket_no_upscale ?? true;
@@ -502,12 +522,25 @@ function populateDataset(dataset) {
   // Alpha mask: check if any subset has it enabled
   $("cfg-alpha-mask").checked = subsetsRaw.some((s) => s.alpha_mask === true);
   renderSubsets();
+  // Rebuild progressive phase rows now that resolution field is populated
+  if ($("cfg-progressive-reso").checked) renderProgressivePhases();
 }
 function updateOptimizerOptions() {
   const optimizer = $("cfg-optimizer").value;
   const isProdigy =
     optimizer.includes("Prodigy") || optimizer.includes("DAdapt");
   $("group-decouple").classList.toggle("hidden", !isProdigy);
+}
+function updateLrSchedulerOptions() {
+  const scheduler = $("cfg-lr-scheduler").value;
+  $("group-lr-scheduler-cycles").classList.toggle(
+    "hidden",
+    scheduler !== "cosine_with_restarts",
+  );
+  $("group-lr-min-ratio").classList.toggle(
+    "hidden",
+    scheduler !== "cosine_with_min_lr",
+  );
 }
 function updateActivationOffloadUI() {
   const offload = $("cfg-activation-offload").value;
@@ -578,6 +611,14 @@ function gatherConfig() {
       optimizer_type: $("cfg-optimizer").value,
       optimizer_args: optimizerArgs.length > 0 ? optimizerArgs : undefined,
       lr_scheduler: $("cfg-lr-scheduler").value,
+      lr_scheduler_num_cycles:
+        $("cfg-lr-scheduler").value === "cosine_with_restarts"
+          ? safeInt($("cfg-lr-scheduler-cycles").value)
+          : undefined,
+      lr_scheduler_min_lr_ratio:
+        $("cfg-lr-scheduler").value === "cosine_with_min_lr"
+          ? safeFloat($("cfg-lr-min-ratio").value)
+          : undefined,
       lr_warmup_steps: safeInt($("cfg-lr-warmup").value),
       // Hardware
       mixed_precision: $("cfg-mixed-precision").value,
@@ -639,6 +680,19 @@ function gatherConfig() {
       ).value.trim(),
       // Diagnostics
       step_profile: $("cfg-step-profile").checked,
+      profile_microbatch: $("cfg-profile-microbatch").checked,
+      // Progressive resolution schedule
+      ...(() => {
+        if (!$("cfg-progressive-reso").checked) return {};
+        const resList = ($("cfg-resolution").value || "1536").split(",").map(r => parseInt(r.trim())).filter(Boolean);
+        const inputs = document.querySelectorAll(".prog-reso-frac");
+        if (inputs.length === 0 || resList.length < 2) return {};
+        const parts = resList.map((r, i) => {
+          const frac = parseFloat(inputs[i]?.value || 0);
+          return `${r}:${frac.toFixed(2)}`;
+        });
+        return { resolution_schedule: parts.join(",") };
+      })(),
     },
     network_arguments: {
       network_module: $("cfg-network-module").value,
@@ -679,31 +733,40 @@ function gatherDataset() {
       max_bucket_reso: safeInt($("cfg-max-bucket").value),
       bucket_reso_steps: safeInt($("cfg-bucket-steps").value),
     },
-    datasets: [
-      {
-        resolution: [res, res],
-        batch_size: safeInt($("cfg-batch-size").value),
-        caption_extension: $("cfg-caption-ext").value,
-        subsets: currentSubsets.map((s) => {
-          const subset = {
-            image_dir: s.image_dir,
-            num_repeats: safeInt(s.num_repeats),
-            keep_tokens: safeInt(s.keep_tokens),
-            flip_aug: s.flip_aug,
-            caption_prefix: s.caption_prefix,
-            caption_dropout_rate: safeFloat(s.caption_dropout_rate),
-            caption_tag_dropout_rate: safeFloat(s.caption_tag_dropout_rate),
-            caption_dropout_every_n_epochs: safeInt(
-              s.caption_dropout_every_n_epochs,
-            ),
-            shuffle_caption: s.shuffle_caption,
-          };
-          if (s.is_reg) subset.is_reg = true;
-          if ($("cfg-alpha-mask").checked) subset.alpha_mask = true;
-          return subset;
-        }),
-      },
-    ],
+    datasets: (() => {
+      const resStr = $("cfg-resolution").value || "1536";
+      const batchStr = $("cfg-batch-size").value || "4";
+
+      const resList = resStr.split(",").map(r => safeInt(r.trim()));
+      const batchListRaw = batchStr.split(",").map(b => safeInt(b.trim()));
+
+      return resList.map((r, i) => {
+        const b = batchListRaw[i] !== undefined ? batchListRaw[i] : batchListRaw[batchListRaw.length - 1];
+        return {
+          resolution: [r, r],
+          batch_size: b,
+          caption_extension: $("cfg-caption-ext").value,
+          subsets: currentSubsets.map((s) => {
+            const subset = {
+              image_dir: s.image_dir,
+              num_repeats: safeInt(s.num_repeats),
+              keep_tokens: safeInt(s.keep_tokens),
+              flip_aug: s.flip_aug,
+              caption_prefix: s.caption_prefix,
+              caption_dropout_rate: safeFloat(s.caption_dropout_rate),
+              caption_tag_dropout_rate: safeFloat(s.caption_tag_dropout_rate),
+              caption_dropout_every_n_epochs: safeInt(
+                s.caption_dropout_every_n_epochs,
+              ),
+              shuffle_caption: s.shuffle_caption,
+            };
+            if (s.is_reg) subset.is_reg = true;
+            if ($("cfg-alpha-mask").checked) subset.alpha_mask = true;
+            return subset;
+          }),
+        };
+      });
+    })(),
   };
 }
 // ==========================================
@@ -954,6 +1017,12 @@ function discardChanges() {
     },
   );
 }
+// Show/hide microbatch option depending on step profile checkbox
+$("cfg-step-profile").addEventListener("change", (e) => {
+  $("cfg-profile-microbatch-group").style.display = e.target.checked ? "" : "none";
+  if (!e.target.checked) $("cfg-profile-microbatch").checked = false;
+});
+
 // Mark dirty on any input change
 document.addEventListener("input", (e) => {
   if (e.target.closest(".tab-content") && e.target.closest(".tab-pane")) {
@@ -1199,7 +1268,7 @@ function loadPromptTransientSettings() {
       $("gen-multi-gpu-mode").value = settings.gen_multi_gpu_mode;
     }
     // selected_lora is handled in loadCheckpoints
-  } catch (e) {}
+  } catch (e) { }
 }
 // ==========================================
 //  Console
@@ -1211,8 +1280,8 @@ function appendConsole(text) {
   }
   const wasNearBottom =
     consoleOutput.scrollHeight -
-      consoleOutput.scrollTop -
-      consoleOutput.clientHeight <
+    consoleOutput.scrollTop -
+    consoleOutput.clientHeight <
     100;
   // Standard Terminal logic: \r overwrites the CURRENT line.
   // We split current content and process the last line surgically.
@@ -1267,7 +1336,7 @@ async function loadCheckpoints() {
   if (data) {
     try {
       savedLora = JSON.parse(data).selected_lora;
-    } catch (e) {}
+    } catch (e) { }
   }
   const valToRestore = currentVal || savedLora;
   if (
@@ -2994,6 +3063,112 @@ document.querySelectorAll(".modal").forEach((modal) => {
   });
 });
 // ==========================================
+//  Progressive Resolution Schedule
+// ==========================================
+function renderProgressivePhases() {
+  const resList = ($("cfg-resolution").value || "")
+    .split(",").map(r => parseInt(r.trim())).filter(r => r > 0);
+  const container = $("progressive-reso-phases");
+  if (!container) return;
+
+  // Preserve existing fraction values by index before clearing
+  const existing = Array.from(container.querySelectorAll(".prog-reso-frac"))
+    .map(el => parseFloat(el.value) || 0);
+
+  container.innerHTML = "";
+
+  if (resList.length < 2) {
+    container.innerHTML = '<small>Enter at least 2 resolutions above to configure phases.</small>';
+    updateProgressiveSum();
+    return;
+  }
+
+  const defaultFrac = +(1 / resList.length).toFixed(2);
+
+  // All phases go in a single form-row so they appear side-by-side
+  const row = document.createElement("div");
+  row.className = "form-row";
+
+  resList.forEach((r, i) => {
+    const group = document.createElement("div");
+    group.className = "form-group";
+
+    const label = document.createElement("label");
+    label.textContent = `${r}px`;
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "prog-reso-frac";
+    input.min = "0.01";
+    input.max = "0.99";
+    input.step = "0.01";
+    input.value = (existing[i] !== undefined && existing[i] > 0)
+      ? existing[i].toFixed(2) : defaultFrac.toFixed(2);
+
+    const hint = document.createElement("small");
+    hint.textContent = `${Math.round(parseFloat(input.value) * 100)}% of steps`;
+
+    input.addEventListener("input", () => {
+      hint.textContent = `${Math.round(parseFloat(input.value) * 100)}% of steps`;
+      updateProgressiveSum();
+    });
+
+    group.appendChild(label);
+    group.appendChild(input);
+    group.appendChild(hint);
+    row.appendChild(group);
+  });
+
+  container.appendChild(row);
+
+  // Restore fractions when loading from a saved config
+  if (window._pendingProgressiveSchedule) {
+    const fracs = window._pendingProgressiveSchedule
+      .split(",").map(p => parseFloat(p.split(":")[1]) || 0);
+    container.querySelectorAll(".prog-reso-frac").forEach((inp, i) => {
+      if (fracs[i] !== undefined) {
+        inp.value = fracs[i].toFixed(2);
+        inp.dispatchEvent(new Event("input"));
+      }
+    });
+    window._pendingProgressiveSchedule = null;
+  }
+
+  updateProgressiveSum();
+}
+
+function updateProgressiveSum() {
+  const inputs = document.querySelectorAll(".prog-reso-frac");
+  const sum = Array.from(inputs).reduce((acc, el) => acc + (parseFloat(el.value) || 0), 0);
+  const hint = $("progressive-reso-sum-hint");
+  if (!hint) return;
+  const ok = Math.abs(sum - 1.0) < 0.015;
+  const sumStr = `Sum: ${sum.toFixed(2)}`;
+  // Show sum inline in the hint text with colour
+  hint.innerHTML = `Each fraction is the portion of total steps for that resolution. Must sum to 1.0. &nbsp;<span style="font-weight:600;color:${ok ? "var(--success,#4caf50)" : "var(--error,#f44336)"}">${sumStr}</span>`;
+}
+
+// Toggle panel visibility and re-render phases
+document.addEventListener("change", (e) => {
+  if (e.target.id === "cfg-progressive-reso") {
+    const panel = $("progressive-reso-panel");
+    if (e.target.checked) {
+      panel.classList.remove("hidden");
+      renderProgressivePhases();
+    } else {
+      panel.classList.add("hidden");
+    }
+  }
+});
+
+// Re-render phases when the resolution list changes
+document.addEventListener("input", (e) => {
+  if (e.target.id === "cfg-resolution" && $("cfg-progressive-reso")?.checked) {
+    renderProgressivePhases();
+  }
+});
+
+// ==========================================
 //  Init
 // ==========================================
 async function init() {
@@ -3012,7 +3187,7 @@ async function init() {
         bg.blur,
         bg.textShadow,
       );
-    } catch (e) {}
+    } catch (e) { }
   }
   // 2. Normal Init
   connectWS();
@@ -3032,6 +3207,7 @@ async function init() {
   });
   // Optimizer custom bindings
   $("cfg-optimizer").addEventListener("change", updateOptimizerOptions);
+  $("cfg-lr-scheduler").addEventListener("change", updateLrSchedulerOptions);
   // Activation offload <-> blocks to swap mutual exclusivity
   $("cfg-activation-offload").addEventListener(
     "change",
