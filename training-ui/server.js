@@ -114,6 +114,11 @@ function sanitizeName(name) {
     return safe;
 }
 
+function stripQuotes(p) {
+    if (typeof p !== 'string') return p;
+    return p.replace(/^['"]+|['"]+$/g, '');
+}
+
 function getJobPath(name) {
     return path.join(JOBS_DIR, sanitizeName(name));
 }
@@ -122,14 +127,6 @@ function getGlobalConfig() {
     if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
         try {
             const config = TOML.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf8'));
-            // Sanitize paths (remove extra quotes if user added them manually)
-            if (config.model_paths) {
-                for (const key in config.model_paths) {
-                    if (typeof config.model_paths[key] === 'string') {
-                        config.model_paths[key] = config.model_paths[key].replace(/^"|"$/g, '').replace(/^'|'$/g, '');
-                    }
-                }
-            }
             return config;
         } catch (err) {
             console.error('Failed to parse global config:', err.message);
@@ -399,7 +396,7 @@ function buildTrainingConfig(jobName, jobPath) {
 
     // Move resume from network_args to training_args
     if (jobConfig.network_arguments?.resume) {
-        merged.training_arguments.resume = jobConfig.network_arguments.resume.replace(/^['"]+|['"]+$/g, '');
+        merged.training_arguments.resume = jobConfig.network_arguments.resume;
     }
 
     // Auto-resume: detect last state if checkbox enabled and no explicit resume set
@@ -438,9 +435,6 @@ function buildTrainingConfig(jobName, jobPath) {
 
     // Network arguments
     merged.network_arguments = { ...jobConfig.network_arguments };
-    if (merged.network_arguments.network_weights) {
-        merged.network_arguments.network_weights = merged.network_arguments.network_weights.replace(/^['"]+|['"]+$/g, '');
-    }
     delete merged.network_arguments.resume;
     delete merged.network_arguments.auto_resume_last_state;
 
@@ -521,7 +515,13 @@ app.get('/api/global-config', (req, res) => {
 
 app.put('/api/global-config', (req, res) => {
     try {
-        const tomlStr = TOML.stringify(req.body);
+        const body = req.body;
+        if (body.model_paths) {
+            for (const key in body.model_paths) {
+                body.model_paths[key] = stripQuotes(body.model_paths[key]);
+            }
+        }
+        const tomlStr = TOML.stringify(body);
         fs.writeFileSync(GLOBAL_CONFIG_PATH, tomlStr, 'utf8');
         res.json({ success: true });
     } catch (err) {
@@ -671,7 +671,13 @@ app.put('/api/jobs/:name', (req, res) => {
         }
 
         if (req.body.config) {
-            fs.writeFileSync(path.join(jobPath, 'config.toml'), TOML.stringify(req.body.config), 'utf8');
+            const config = req.body.config;
+            const na = config.network_arguments;
+            if (na) {
+                if (na.resume)          na.resume          = stripQuotes(na.resume);
+                if (na.network_weights) na.network_weights = stripQuotes(na.network_weights);
+            }
+            fs.writeFileSync(path.join(jobPath, 'config.toml'), TOML.stringify(config), 'utf8');
         }
         if (req.body.dataset) {
             fs.writeFileSync(path.join(jobPath, 'dataset.toml'), TOML.stringify(req.body.dataset), 'utf8');
@@ -1157,7 +1163,7 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
 
         // LoRA support
         if (req.body.network_weights) {
-            const nw = req.body.network_weights.replace(/^['"]+|['"]+$/g, '');
+            const nw = stripQuotes(req.body.network_weights);
             args.push(`--network_weights="${nw}"`);
             args.push(`--network_mul=${req.body.network_mul || 1.0}`);
         }
@@ -1248,7 +1254,7 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
             // Send generation request
             const payload = {
                 sample_prompts: promptsPath,
-                network_weights: req.body.network_weights ? req.body.network_weights.replace(/^['"]+|['"]+$/g, '') : null,
+                network_weights: req.body.network_weights ? stripQuotes(req.body.network_weights) : null,
                 network_mul: req.body.network_mul || 1.0,
                 flash_attn: req.body.flash_attn || false,
                 sage_attn: req.body.sage_attn || false
