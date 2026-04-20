@@ -49,6 +49,7 @@ def get_model_state_dict_for_save(
     if model is None:
         return None
 
+    # LoRA network is never FSDP-wrapped (kept outside accelerator.prepare), so state_dict() is safe directly.
     if save_intent == SAVE_INTENT_LORA_STATE:
         target_model = unwrap_model(
             accelerator,
