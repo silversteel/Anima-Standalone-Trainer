@@ -65,24 +65,19 @@ class ColumnParallelLoRAModule(LoRAModule):
         self._seq_dim = seq_dim
         self._use_sp = use_sp
 
-    def forward(self, x):
-        org_forwarded = self.org_forward(x)
-
-        if self.module_dropout is not None and self.training:
-            if torch.rand(1) < self.module_dropout:
-                return org_forwarded
-
-        # For SP: all-gather x so LoRA path sees the same full-sequence input
-        lora_x = x
-        if self._use_sp and self._tp_group is not None:
+    def _prepare_tp_input(self, x: torch.Tensor) -> torch.Tensor:
+        if self._tp_group is None or self._tp_group.size() <= 1:
+            return x
+        if self._use_sp:
             from wd_parallel import gather_from_sp_region
-            lora_x = gather_from_sp_region(x, self._tp_group, self._seq_dim)
+            return gather_from_sp_region(x, self._tp_group, self._seq_dim)
+        from wd_parallel import copy_to_tp_region
+        return copy_to_tp_region(x, self._tp_group)
 
-        lx = self.lora_down(lora_x)
-
+    def _apply_lora_path(self, x: torch.Tensor) -> tuple[torch.Tensor, float]:
+        lx = self.lora_down(x)
         if self.dropout is not None and self.training:
             lx = torch.nn.functional.dropout(lx, p=self.dropout)
-
         if self.rank_dropout is not None and self.training:
             mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
             if len(lx.size()) == 3:
@@ -91,8 +86,18 @@ class ColumnParallelLoRAModule(LoRAModule):
             scale = self.scale * (1.0 / (1.0 - self.rank_dropout))
         else:
             scale = self.scale
+        return self.lora_up(lx), scale
 
-        lx = self.lora_up(lx)
+    def forward(self, x):
+        shared_x = self._prepare_tp_input(x)
+        org_module = self.org_module_ref[0]
+        org_forwarded = torch.nn.functional.linear(shared_x, org_module.weight, org_module.bias)
+
+        if self.module_dropout is not None and self.training:
+            if torch.rand(1) < self.module_dropout:
+                return org_forwarded
+
+        lx, scale = self._apply_lora_path(shared_x)
         output = org_forwarded + lx * self.multiplier * scale
 
         # Only register hooks for the very first ColPar module to avoid output flood.
@@ -122,13 +127,13 @@ class ColumnParallelLoRAModule(LoRAModule):
             if lx.requires_grad:
                 lx.register_hook(_hook_lx)
 
-            def _hook_lora_x(grad, _n=name):
+            def _hook_shared_x(grad, _n=name):
                 from tqdm import tqdm
                 status = "NaN" if not torch.isfinite(grad).all() else "ok"
-                tqdm.write(f"[NaN DIAG ColPar] C(lora_x grad, after gather bwd): {status}  nan={torch.isnan(grad).sum().item()}")
+                tqdm.write(f"[NaN DIAG ColPar] C(shared_x grad, after TP/SP input bwd): {status}  nan={torch.isnan(grad).sum().item()}")
                 return grad
-            if lora_x.requires_grad:
-                lora_x.register_hook(_hook_lora_x)
+            if shared_x.requires_grad:
+                shared_x.register_hook(_hook_shared_x)
 
         return output
 
@@ -168,21 +173,27 @@ class PackedColumnParallelLoRAModule(LoRAModule):
         for up in self.lora_up:
             torch.nn.init.zeros_(up.weight)
 
+    def _prepare_tp_input(self, x: torch.Tensor) -> torch.Tensor:
+        if self._tp_group is None or self._tp_group.size() <= 1:
+            return x
+        if self._use_sp:
+            from wd_parallel import gather_from_sp_region
+            return gather_from_sp_region(x, self._tp_group, self._seq_dim)
+        from wd_parallel import copy_to_tp_region
+        return copy_to_tp_region(x, self._tp_group)
+
     def forward(self, x):
-        org_forwarded = self.org_forward(x)
+        shared_x = self._prepare_tp_input(x)
+        org_module = self.org_module_ref[0]
+        org_forwarded = torch.nn.functional.linear(shared_x, org_module.weight, org_module.bias)
 
         if self.module_dropout is not None and self.training:
             if torch.rand(1) < self.module_dropout:
                 return org_forwarded
 
-        lora_x = x
-        if self._use_sp and self._tp_group is not None:
-            from wd_parallel import gather_from_sp_region
-            lora_x = gather_from_sp_region(x, self._tp_group, self._seq_dim)
-
         outs = []
         for down, up in zip(self.lora_down, self.lora_up):
-            lx = down(lora_x)
+            lx = down(shared_x)
             if self.dropout is not None and self.training:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
             if self.rank_dropout is not None and self.training:
@@ -216,14 +227,32 @@ class RowParallelLoRAModule(LoRAModule):
         self._seq_dim = seq_dim
         self._use_sp = use_sp
 
+    def _reduce_tp_output(self, x: torch.Tensor) -> torch.Tensor:
+        if self._tp_group is None or self._tp_group.size() <= 1:
+            return x
+        if self._use_sp:
+            from wd_parallel import reduce_scatter_to_sp_region
+            return reduce_scatter_to_sp_region(x, self._tp_group, self._seq_dim)
+        import torch.distributed as dist
+        x = x.contiguous()
+        dist.all_reduce(x, group=self._tp_group)
+        return x
+
     def forward(self, x):
-        org_forwarded = self.org_forward(x)
+        org_module = self.org_module_ref[0]
+        x_local = x
+        if x_local.size(-1) < org_module.in_features:
+            x_local = torch.nn.functional.pad(x_local, (0, org_module.in_features - x_local.size(-1)))
+        org_local = torch.nn.functional.linear(x_local, org_module.weight, None)
 
         if self.module_dropout is not None and self.training:
             if torch.rand(1) < self.module_dropout:
-                return org_forwarded
+                output = self._reduce_tp_output(org_local)
+                if org_module.bias is not None:
+                    output = output + org_module.bias
+                return output
 
-        lx = self.lora_down(x)
+        lx = self.lora_down(x_local)
 
         if self.dropout is not None and self.training:
             lx = torch.nn.functional.dropout(lx, p=self.dropout)
@@ -237,20 +266,12 @@ class RowParallelLoRAModule(LoRAModule):
         else:
             scale = self.scale
 
-        lx = self.lora_up(lx)
-        lx_pre_scatter = lx  # save ref for hook before scatter changes the node
-
-        # Match the reduction that org_forward applied
-        if self._tp_group is not None:
-            if self._use_sp:
-                from wd_parallel import reduce_scatter_to_sp_region
-                lx = reduce_scatter_to_sp_region(lx, self._tp_group, self._seq_dim)
-            else:
-                import torch.distributed as dist
-                lx = lx.contiguous()
-                dist.all_reduce(lx, group=self._tp_group)
-
-        output = org_forwarded + lx * self.multiplier * scale
+        lx = self.lora_up(lx) * self.multiplier * scale
+        combined_local = org_local + lx
+        lx_pre_scatter = combined_local  # save ref for hook before scatter changes the node
+        output = self._reduce_tp_output(combined_local)
+        if org_module.bias is not None:
+            output = output + org_module.bias
 
         # Only register hooks for the very first RowPar module.
         # Hooks fire in backward order: A (output) → B (lx post-scatter) → C (lx pre-scatter).
@@ -273,7 +294,7 @@ class RowParallelLoRAModule(LoRAModule):
             def _hook_lx_post(grad, _n=name):
                 from tqdm import tqdm
                 status = "NaN" if not torch.isfinite(grad).all() else "ok"
-                tqdm.write(f"[NaN DIAG RowPar] B(lx post-scatter grad): {status}  nan={torch.isnan(grad).sum().item()}")
+                tqdm.write(f"[NaN DIAG RowPar] B(combined post-scatter grad): {status}  nan={torch.isnan(grad).sum().item()}")
                 return grad
             if lx.requires_grad:
                 lx.register_hook(_hook_lx_post)
@@ -281,7 +302,7 @@ class RowParallelLoRAModule(LoRAModule):
             def _hook_lx_pre(grad, _n=name):
                 from tqdm import tqdm
                 status = "NaN" if not torch.isfinite(grad).all() else "ok"
-                tqdm.write(f"[NaN DIAG RowPar] C(lx pre-scatter grad): {status}  nan={torch.isnan(grad).sum().item()}")
+                tqdm.write(f"[NaN DIAG RowPar] C(combined pre-scatter grad): {status}  nan={torch.isnan(grad).sum().item()}")
                 return grad
             if lx_pre_scatter.requires_grad:
                 lx_pre_scatter.register_hook(_hook_lx_pre)

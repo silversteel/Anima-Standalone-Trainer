@@ -444,12 +444,24 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
         self._tp_diag_path = None
         self._tp_diag_header_written = False
         self._tp_last_args = None
+        self._tp_debug_enabled = False
+        self._tp_debug_interval = 0
 
     def _tp_rank(self):
         return dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
 
-    def _tp_diag(self, args, message, *, all_ranks=False, to_logger=False):
+    def _tp_debug_should_sample(self, step: int | None = None) -> bool:
+        if not self._tp_debug_enabled:
+            return False
+        interval = max(1, int(self._tp_debug_interval or 0))
+        if step is None:
+            step = self._tp_step
+        return step <= 1 or (step % interval) == 0
+
+    def _tp_diag(self, args, message, *, all_ranks=False, to_logger=False, force=False):
         if not self.tp_active and self.tp_groups is None:
+            return
+        if not force and not self._tp_debug_enabled:
             return
         rank = self._tp_rank()
         if rank != 0 and not all_ranks:
@@ -526,6 +538,7 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
                 f"device={accelerator.device} dtype={weight_dtype}",
                 all_ranks=True,
                 to_logger=True,
+                force=True,
             )
 
             # Optional full-model forward check. It is useful for debugging, but it
@@ -534,7 +547,7 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
                 from tp_sp_verify import run_all_checks as _tp_verify
                 _tp_verify(dit=dit, network=None, groups=self.tp_groups, use_sp=self.use_sp)
             else:
-                self._tp_diag(args, "skip full-model verify before training", all_ranks=True, to_logger=True)
+                self._tp_diag(args, "skip full-model verify before training", all_ranks=True, to_logger=True, force=True)
 
         return model_type, text_encoders, vae, dit
 
@@ -557,7 +570,7 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
         if not self.tp_active:
             return super().prepare_unet_with_accelerator(args, accelerator, unet)
 
-        self._tp_diag(args, "begin prepare_unet_with_accelerator", all_ranks=True, to_logger=True)
+        self._tp_diag(args, "begin prepare_unet_with_accelerator", all_ranks=True, to_logger=True, force=True)
 
         real_rank = dist.get_rank() if dist.is_initialized() else 0
         accelerator.state.local_process_index = real_rank
@@ -634,9 +647,9 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
 
             def _tp_accelerator_prepare(*objects, **kwargs):
                 names = ",".join(type(o).__name__ for o in objects)
-                self._tp_diag(args, f"begin accelerator.prepare objects={names}", all_ranks=True, to_logger=True)
+                self._tp_diag(args, f"begin accelerator.prepare objects={names}", all_ranks=True, to_logger=True, force=True)
                 out = _orig_accelerator_prepare(*objects, **kwargs)
-                self._tp_diag(args, f"end accelerator.prepare objects={names}", all_ranks=True, to_logger=True)
+                self._tp_diag(args, f"end accelerator.prepare objects={names}", all_ranks=True, to_logger=True, force=True)
                 return out
 
             _tp_accelerator_prepare._tp_stage_wrapped = True
@@ -653,7 +666,7 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
         else:
             unet.to(accelerator.device)
 
-        self._tp_diag(args, "end prepare_unet_with_accelerator", all_ranks=True, to_logger=True)
+        self._tp_diag(args, "end prepare_unet_with_accelerator", all_ranks=True, to_logger=True, force=True)
         return unet
 
     # ----- override: broadcast batch from rank 0 so all TP ranks see same data -----
@@ -718,7 +731,7 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
             train_unet=train_unet,
         )
 
-        # Loss diagnostics: every step goes to a sidecar file; first NaN/Inf also hits tqdm.
+        # Loss diagnostics are sampled in debug mode; first NaN/Inf still hits tqdm.
         if self.tp_active:
             loss_val = loss.detach().float().item()
             finite_loss = loss_val == loss_val and loss_val not in (float('inf'), float('-inf'))
@@ -727,7 +740,8 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
             mem = ""
             if torch.cuda.is_available() and torch.cuda.current_device() >= 0:
                 mem = f" cuda_mem_alloc_mb={torch.cuda.memory_allocated() / (1024 ** 2):.1f}"
-            self._tp_diag(args, f"step={self._tp_step} loss={loss_val:.8g} finite={finite_loss} latent_shape={lat_shape}{mem}", all_ranks=True)
+            if self._tp_debug_should_sample(self._tp_step):
+                self._tp_diag(args, f"step={self._tp_step} loss={loss_val:.8g} finite={finite_loss} latent_shape={lat_shape}{mem}", all_ranks=True)
             if self._tp_rank() == 0 and not finite_loss:
                 tqdm.write(
                     f"[TP NaN] step {self._tp_step}: forward loss={loss_val}  "
@@ -747,6 +761,8 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
         TP-sharded params differ per rank.
         """
         if not self.tp_active or not is_train:
+            return
+        if not self._tp_debug_should_sample(self._tp_step + 1):
             return
 
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -782,10 +798,10 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
             super().all_reduce_network(accelerator, network)
             return
 
-        # Gradient diagnostics on rank 0: log L2 norm every step + report first
+        # Gradient diagnostics on rank 0: sampled in debug mode + report first
         # NaN/Inf occurrence.  Norm tracking reveals gradients growing toward NaN
         # before the loss itself goes NaN.
-        if dist.get_rank() == 0:
+        if dist.get_rank() == 0 and self._tp_debug_should_sample(self._tp_step):
             total_sq = 0.0
             max_abs  = 0.0
             nan_params = []
@@ -844,13 +860,15 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
         """
         super().post_process_network(args, accelerator, network, text_encoders, unet)
         self._tp_lora_network = network
+        self._tp_debug_enabled = bool(getattr(args, "tp_debug", False))
+        self._tp_debug_interval = max(1, int(getattr(args, "tp_debug_interval", 100) or 100))
 
         if not self.tp_active:
             return
 
         sharded, partial = _tag_tp_lora_params(network)
         logger.info(f"Tagged {sharded} TP-sharded LoRA parameters and {partial} SP-partial replicated LoRA parameters")
-        self._tp_diag(args, f"lora_params sharded={sharded} sp_partial_replicated={partial}", all_ranks=True, to_logger=True)
+        self._tp_diag(args, f"lora_params sharded={sharded} sp_partial_replicated={partial}", all_ranks=True, to_logger=True, force=True)
 
         # Stage markers for quick TP/SP smoke runs. Exit 137 gives no Python
         # traceback, so these breadcrumbs show the last successful setup step.
@@ -860,9 +878,9 @@ class AnimaNetworkTrainerTPSP(AnimaNetworkTrainer):
                 return
 
             def wrapped(*a, **kw):
-                self._tp_diag(args, f"begin {method_name}", all_ranks=True, to_logger=True)
+                self._tp_diag(args, f"begin {method_name}", all_ranks=True, to_logger=True, force=True)
                 out = original(*a, **kw)
-                self._tp_diag(args, f"end {method_name}", all_ranks=True, to_logger=True)
+                self._tp_diag(args, f"end {method_name}", all_ranks=True, to_logger=True, force=True)
                 return out
 
             wrapped._tp_stage_wrapped = True
@@ -1104,6 +1122,14 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tp_verify_model_forward", action="store_true",
         help="Run the expensive full-DiT TP/SP forward diagnostic before training.",
+    )
+    parser.add_argument(
+        "--tp_debug", action="store_true",
+        help="Enable verbose TP/SP per-step diagnostics. Off by default for production runs.",
+    )
+    parser.add_argument(
+        "--tp_debug_interval", type=int, default=100,
+        help="Sample TP/SP debug diagnostics every N steps when --tp_debug is enabled. (default: 100)",
     )
     parser.add_argument(
         "--no_fuse_qkv", action="store_true",
