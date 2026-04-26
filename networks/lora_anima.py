@@ -65,6 +65,11 @@ class ColumnParallelLoRAModule(LoRAModule):
         self._seq_dim = seq_dim
         self._use_sp = use_sp
 
+    def apply_to(self):
+        org_module = self.org_module
+        super().apply_to()
+        org_module._tp_lora_adapter = self
+
     def _prepare_tp_input(self, x: torch.Tensor) -> torch.Tensor:
         if self._tp_group is None or self._tp_group.size() <= 1:
             return x
@@ -91,8 +96,7 @@ class ColumnParallelLoRAModule(LoRAModule):
             scale = self.scale
         return self.lora_up(lx), scale
 
-    def forward(self, x):
-        shared_x = self._prepare_tp_input(x)
+    def forward_from_prepared_input(self, shared_x: torch.Tensor) -> torch.Tensor:
         org_module = self.org_module_ref[0]
         org_forwarded = torch.nn.functional.linear(shared_x, org_module.weight, org_module.bias)
 
@@ -103,13 +107,6 @@ class ColumnParallelLoRAModule(LoRAModule):
         lx, scale = self._apply_lora_path(shared_x)
         output = org_forwarded + lx * self.multiplier * scale
 
-        # Only register hooks for the very first ColPar module to avoid output flood.
-        # Hooks fire in backward order: A (output) → B (lx) → C (lora_x).
-        # Reading the output tells exactly where in the chain NaN first appears:
-        #   A NaN only           → upstream (base model backward) is already NaN
-        #   A+B NaN, C finite    → should not happen (B = A * scale)
-        #   A+B+C NaN            → gather_from_sp_region backward (reduce_scatter) produces NaN
-        #   A finite, C NaN      → impossible (C is downstream of A in backward)
         if self.training and not getattr(ColumnParallelLoRAModule, '_hooks_registered', False):
             ColumnParallelLoRAModule._hooks_registered = True
             name = self.lora_name
@@ -139,6 +136,10 @@ class ColumnParallelLoRAModule(LoRAModule):
                 shared_x.register_hook(_hook_shared_x)
 
         return output
+
+    def forward(self, x):
+        shared_x = self._prepare_tp_input(x)
+        return self.forward_from_prepared_input(shared_x)
 
 
 class PackedColumnParallelLoRAModule(LoRAModule):
@@ -176,6 +177,11 @@ class PackedColumnParallelLoRAModule(LoRAModule):
         for up in self.lora_up:
             torch.nn.init.zeros_(up.weight)
 
+    def apply_to(self):
+        org_module = self.org_module
+        super().apply_to()
+        org_module._tp_lora_adapter = self
+
     def _prepare_tp_input(self, x: torch.Tensor) -> torch.Tensor:
         if self._tp_group is None or self._tp_group.size() <= 1:
             return x
@@ -188,8 +194,7 @@ class PackedColumnParallelLoRAModule(LoRAModule):
         from wd_parallel import copy_to_tp_region
         return copy_to_tp_region(x, self._tp_group)
 
-    def forward(self, x):
-        shared_x = self._prepare_tp_input(x)
+    def forward_from_prepared_input(self, shared_x: torch.Tensor) -> torch.Tensor:
         org_module = self.org_module_ref[0]
         org_forwarded = torch.nn.functional.linear(shared_x, org_module.weight, org_module.bias)
 
@@ -220,6 +225,10 @@ class PackedColumnParallelLoRAModule(LoRAModule):
         outs = outs.reshape(*shared_x.shape[:-1], -1)
 
         return org_forwarded + outs * (self.multiplier * scale)
+
+    def forward(self, x):
+        shared_x = self._prepare_tp_input(x)
+        return self.forward_from_prepared_input(shared_x)
 
 
 class RowParallelLoRAModule(LoRAModule):

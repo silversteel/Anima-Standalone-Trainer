@@ -144,6 +144,21 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self._optimizer_device_fix_warned = False
+
+    @staticmethod
+    def _ensure_optimizer_param_devices_match_grads(optimizer) -> int:
+        """Move swapped/offloaded params back to their grad device before optimizer.step()."""
+        moved = 0
+        for group in optimizer.param_groups:
+            for p in group["params"]:
+                if p is None or p.grad is None:
+                    continue
+                grad_device = p.grad.device
+                if p.device != grad_device:
+                    p.data = p.data.to(device=grad_device, non_blocking=True)
+                    moved += 1
+        return moved
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -1763,6 +1778,19 @@ class NetworkTrainer:
                             network.update_grad_norms()
                         if hasattr(network, "update_norms"):
                             network.update_norms()
+
+                    if (
+                        args.blocks_to_swap
+                        or getattr(args, "cpu_offload_checkpointing", False)
+                        or getattr(args, "unsloth_offload_checkpointing", False)
+                    ):
+                        moved_params = self._ensure_optimizer_param_devices_match_grads(optimizer)
+                        if moved_params > 0 and not self._optimizer_device_fix_warned:
+                            logger.warning(
+                                f"Moved {moved_params} trainable parameters back to their grad device before optimizer.step() "
+                                f"to support block swap / offload with the current optimizer."
+                            )
+                            self._optimizer_device_fix_warned = True
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)

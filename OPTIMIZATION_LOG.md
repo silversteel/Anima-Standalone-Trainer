@@ -41,6 +41,15 @@ When we add more, append a new entry here and keep the commit hash up to date.
   - Updates TP-aware LoRA wrappers to honor the same skip-input-grad flag so the base path and LoRA path stay consistent.
   - Intended to remove the backward `all_reduce` on replicated frozen conditioning branches when gradient checkpointing would otherwise force those tensors to require grad.
 
+### 5. Async cross-attention Q-gather overlap
+- Commit: `uncommitted`
+- What changed:
+  - Added async SP gather support in `wd_parallel` via a pending-handle helper that preserves autograd.
+  - Exposed `prepare_input_async()` / `forward_from_prepared_input()` on column-parallel layers so callers can launch the gather, do independent work, then finish the projection later.
+  - Taught TP-aware LoRA column wrappers to participate in the same prepared-input path, so overlap does not bypass LoRA math.
+  - Added a conservative `--tp_async_overlap` trainer flag that overlaps cross-attention Q gather with local K/V projection work in the main DiT and the LLM adapter.
+  - Left the default path unchanged and kept self-attention / row-parallel output reductions on the synchronous reference path for now.
+
 ## Notes
 - The current implementation is still compatible with existing save/load behavior.
 - The log should be updated whenever we add another TP/SP, LoRA, or trainer-side optimization.

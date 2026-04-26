@@ -428,6 +428,7 @@ function populateConfig(config) {
   if ($("cfg-tp-backend")) $("cfg-tp-backend").value = t.tp_backend || "auto";
   $("cfg-sequence-parallel").checked = true;
   if ($("cfg-no-fuse-qkv")) $("cfg-no-fuse-qkv").checked = t.no_fuse_qkv ?? false;
+  if ($("cfg-tp-async-overlap")) $("cfg-tp-async-overlap").checked = t.tp_async_overlap ?? false;
   $("cfg-fsdp-sharding-strategy").value = t.fsdp_sharding_strategy || "1";
   $("cfg-fsdp-offload-params").checked = t.fsdp_offload_params ?? false;
   $("cfg-fsdp-reshard-after-forward").checked =
@@ -688,6 +689,7 @@ function gatherConfig() {
               tp_backend: $("cfg-tp-backend")?.value || "auto",
               sequence_parallel: true,
               ...($("cfg-no-fuse-qkv")?.checked ? { no_fuse_qkv: true } : {}),
+              ...($("cfg-tp-async-overlap")?.checked ? { tp_async_overlap: true } : {}),
             }
           : {}),
       use_cuda_direct:

@@ -1459,6 +1459,7 @@ app.post('/api/jobs/:name/train/start', async (req, res) => {
             delete mergedConfig.training_arguments.save_last_n_epochs_state;
         } else if (mergedConfig.training_arguments) {
             delete mergedConfig.training_arguments.no_fuse_qkv;
+            delete mergedConfig.training_arguments.tp_async_overlap;
         }
 
         // Convert Windows paths to WSL paths when running under WSL
