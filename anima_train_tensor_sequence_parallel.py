@@ -19,15 +19,11 @@ setup_logging()
 import logging
 logger = logging.getLogger(__name__)
 
-# wd_parallel — resolve path relative to this script
-_WDP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wd_parallel")
-if _WDP_PATH not in sys.path:
-    sys.path.insert(0, _WDP_PATH)
 try:
     import wd_parallel as wdp
     _WDP_AVAILABLE = True
 except ImportError:
-    logger.warning("wd_parallel not found — TP disabled. Clone C:/wd_parallel next to this repo.")
+    logger.warning("wd_parallel not found — TP disabled. Run: pip install -r requirements.txt")
     _WDP_AVAILABLE = False
 
 # Import everything from the base trainer

@@ -50,13 +50,6 @@ DEFAULT_QWEN3_PATH = os.path.join(DEFAULT_MODEL_ROOT, "text_encoders", "qwen_3_0
 DEFAULT_VAE_PATH = os.path.join(DEFAULT_MODEL_ROOT, "vae", "qwen_image_vae.safetensors")
 
 
-def _ensure_wd_parallel_importable():
-    """Make the sibling wd_parallel repo importable for this standalone trainer."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
-    wdp_path = os.path.abspath(os.path.join(repo_root, "..", "wd_parallel"))
-    if wdp_path not in sys.path:
-        sys.path.insert(0, wdp_path)
-
 
 def _apply_default_model_paths(args):
     """Fill Anima model paths from C:\\Anima\\split_files when omitted."""
@@ -1293,7 +1286,6 @@ if __name__ == "__main__":
         raise ValueError("--no_sequence_parallel is not supported here; this trainer intentionally runs TP+SP together")
     use_sp = True
 
-    _ensure_wd_parallel_importable()
     import wd_parallel as wdp
 
     tp_backend = wdp.activate_backend(getattr(args, "tp_backend", "auto"))
