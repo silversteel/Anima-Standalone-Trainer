@@ -157,6 +157,9 @@ class NetworkTrainer:
                 grad_device = p.grad.device
                 if p.device != grad_device:
                     p.data = p.data.to(device=grad_device, non_blocking=True)
+                    for key, state_value in optimizer.state.get(p, {}).items():
+                        if torch.is_tensor(state_value) and state_value.device != grad_device:
+                            optimizer.state[p][key] = state_value.to(device=grad_device, non_blocking=True)
                     moved += 1
         return moved
 

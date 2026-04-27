@@ -846,6 +846,7 @@ class LoRANetwork(torch.nn.Module):
         return True
 
     def merge_to(self, text_encoders, unet, weights_sd, dtype=None, device=None):
+        weights_sd = self._state_dict_from_standard_packed_lora_keys(weights_sd)
         apply_text_encoder = apply_unet = False
         for key in weights_sd.keys():
             if key.startswith(LoRANetwork.LORA_PREFIX_TEXT_ENCODER):

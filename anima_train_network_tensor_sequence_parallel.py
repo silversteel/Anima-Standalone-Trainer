@@ -1234,7 +1234,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="Tensor Parallel degree. Must match --nproc_per_node in torchrun. (default: 2)",
     )
     parser.add_argument(
-        "--tp_backend", type=str, default="auto", choices=["auto", "cuda_direct", "nccl"],
+        "--tp_backend", type=str, default="auto", choices=["auto", "gloo", "cuda_direct", "nccl"],
         help="Distributed backend for TP+SP. Use cuda_direct on native Windows, nccl on WSL/Linux.",
     )
     parser.add_argument(
@@ -1365,8 +1365,8 @@ if __name__ == "__main__":
     trainer.use_sp = use_sp
 
     # Run the full training loop - inherited from NetworkTrainer
-    trainer.train(args)
-
-    # Cleanup TP
-    if tp_groups is not None:
-        wdp.destroy_dist()
+    try:
+        trainer.train(args)
+    finally:
+        if tp_groups is not None:
+            wdp.destroy_dist()
