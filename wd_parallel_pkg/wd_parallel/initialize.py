@@ -97,6 +97,12 @@ def init_dist(config: ParallelConfig) -> ProcessGroups:
 
     dp_size, tp_size = config.mesh_degrees(world_size)
 
+    if tp_size < 2:
+        raise ValueError(
+            f"init_dist requires tp_size >= 2 (got {tp_size}). "
+            "Use standard DDP for data-parallel-only training."
+        )
+
     if rank == 0:
         print(f"  [wd_parallel] backend={backend}  "
               f"world={world_size}  tp={tp_size}  dp={dp_size}")
@@ -111,9 +117,6 @@ def init_dist(config: ParallelConfig) -> ProcessGroups:
             g = dist.new_group(ranks)
             if rank in ranks:
                 tp_group = g
-    else:
-        # tp_size == 1: create a rank-local TP group so TP helpers stay local.
-        tp_group = dist.new_group([rank])
 
     # --- Build DP sub-groups ---
     # Ranks sharing the same tp_rank form a DP group.

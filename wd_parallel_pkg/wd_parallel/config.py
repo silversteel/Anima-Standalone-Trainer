@@ -73,6 +73,14 @@ class ParallelConfig:
                     f"tp_degree*dp_degree must equal world_size "
                     f"({tp_size}*{dp_size} != {world_size})"
                 )
+            if tp_size < 2:
+                raise ValueError(
+                    f"tp+dp mesh resolved to tp_size={tp_size}; tp requires >= 2 ranks"
+                )
+            if dp_size < 2:
+                raise ValueError(
+                    f"tp+dp mesh resolved to dp_size={dp_size}; dp requires >= 2 ranks"
+                )
             return dp_size, tp_size
 
         if self.tp:

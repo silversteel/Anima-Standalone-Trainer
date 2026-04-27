@@ -487,7 +487,7 @@ class _GatherFromSPRegionAsync(torch.autograd.Function):
                 x0,
                 lambda: dist.all_gather_into_tensor(output0, x0, group=group, async_op=True),
             )
-            result = output0.transpose(0, seq_dim)
+            result = output0.transpose(0, seq_dim).contiguous()
 
         _GatherFromSPRegionAsync._pending_work[id(result)] = work
         return result

@@ -94,6 +94,8 @@ def activate_backend(backend: str) -> str:
             raise ValueError("NCCL is not supported on Windows. Use gloo.")
 
     if backend == "cuda_direct":
+        if os.name != "nt":
+            raise ValueError("cuda_direct is only supported on Windows. Use nccl or gloo.")
         _activate_cuda_direct()
         return "cuda_direct"
 
