@@ -822,6 +822,7 @@ def _modulate_adaln(
     modulation: nn.Sequential,
     emb: torch.Tensor,
     lora_addend: Optional[torch.Tensor],
+    *,
     n_chunks: int,
     do_fp32: bool,
 ) -> Tuple[torch.Tensor, ...]:
