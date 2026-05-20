@@ -1166,14 +1166,14 @@ class Block(nn.Module):
                     self._forward,
                     x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
                     rope_emb_L_1_1_D, adaln_lora_B_T_3D, extra_per_block_pos_emb,
-                    use_fp32,
+                    use_fp32=use_fp32,
                     use_reentrant=False,
                 )
         else:
             return self._forward(
                 x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
                 rope_emb_L_1_1_D, adaln_lora_B_T_3D, extra_per_block_pos_emb,
-                use_fp32,
+                use_fp32=use_fp32,
             )
 
 
