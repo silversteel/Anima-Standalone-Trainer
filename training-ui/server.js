@@ -1262,6 +1262,8 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
         // Attention support
         if (req.body.flash_attn) {
             args.push('--flash_attn');
+        } else if (req.body.sdpa) {
+            args.push('--sdpa');
         } else if (req.body.sage_attn) {
             args.push('--sage_attn');
         }
@@ -1297,7 +1299,8 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
             if (persistentGenProcess && (
                 persistentGenProcess.jobName !== jobName ||
                 persistentGenProcess.gpuIds !== genGpuIdsNormalized ||
-                persistentGenProcess.multiGpuMode !== multiGpuMode
+                persistentGenProcess.multiGpuMode !== multiGpuMode ||
+                persistentGenProcess.sdpa !== req.body.sdpa
             )) {
                 console.log("Configuration changed, restarting persistent server...");
                 killPersistentGen();
@@ -1323,6 +1326,7 @@ app.post('/api/jobs/:name/generate', async (req, res) => {
                     gpuIds: genGpuIdsNormalized,
                     multiGpuMode: multiGpuMode,
                     flashAttn: req.body.flash_attn || false,
+                    sdpa: req.body.sdpa || false,
                     sageAttn: req.body.sage_attn || false
                 };
 

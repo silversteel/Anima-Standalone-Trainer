@@ -261,6 +261,10 @@
                             <label><input type="checkbox" id="cfg-flash-attn"> Flash Attention</label>
                             <small>Requires flash-attn package.</small>
                         </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="cfg-sdpa" checked> SDPA (Scaled Dot-Product Attention)</label>
+                            <small>Native PyTorch optimization for speed and VRAM savings. Highly recommended.</small>
+                        </div>
                         <div id="group-torch-compile" class="form-group">
                             <label><input type="checkbox" id="cfg-torch-compile"> Torch Compile</label>
                             <small>Uses dynamo inductor backend. Slower first step, faster training after.</small>
@@ -309,9 +313,8 @@
                             <div class="form-group">
                                 <label>Timestep Sample Method</label>
                                 <select id="cfg-timestep-method">
-                                    <option value="logit_normal">Logit Normal</option>
+                                    <option value="logit_normal">Logit Normal (Sigmoid)</option>
                                     <option value="uniform">Uniform</option>
-                                    <option value="sigmoid">Sigmoid</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -528,6 +531,10 @@
                                 <div class="form-group">
                                     <label><input type="checkbox" id="gen-flash-attn"> Flash Attention</label>
                                     <small>Requires flash-attn.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label><input type="checkbox" id="gen-sdpa" checked> SDPA</label>
+                                    <small>Built-in PyTorch optimization.</small>
                                 </div>
                                 <div class="form-group">
                                     <label><input type="checkbox" id="gen-sage-attn"> Sage Attention</label>

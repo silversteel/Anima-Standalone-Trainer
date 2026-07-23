@@ -386,6 +386,7 @@ function populateConfig(config) {
   $("cfg-grad-acc").value = t.gradient_accumulation_steps ?? 1;
   $("cfg-gradient-checkpointing").checked = t.gradient_checkpointing ?? true;
   $("cfg-flash-attn").checked = t.flash_attn ?? false;
+  $("cfg-sdpa").checked = t.sdpa ?? true;
   $("cfg-torch-compile").checked = t.torch_compile ?? false;
   $("cfg-lowram").checked = t.lowram ?? false;
   $("cfg-blocks-to-swap").value = t.blocks_to_swap ?? 0;
@@ -683,6 +684,7 @@ function gatherConfig() {
       max_grad_norm: 1.0,
       gradient_checkpointing: $("cfg-gradient-checkpointing").checked,
       flash_attn: $("cfg-flash-attn").checked,
+      sdpa: $("cfg-sdpa").checked,
       torch_compile: $("cfg-torch-compile").checked,
       lowram: $("cfg-lowram").checked,
       blocks_to_swap: safeInt($("cfg-blocks-to-swap").value),
@@ -1337,6 +1339,7 @@ function savePromptTransientSettings() {
     lora_mul: $("gen-lora-mul").value,
     keep_loaded: $("chk-keep-loaded").checked,
     flash_attn: $("gen-flash-attn").checked,
+    sdpa: $("gen-sdpa").checked,
     sage_attn: $("gen-sage-attn").checked,
     global_w: $("global-w").value,
     global_h: $("global-h").value,
@@ -1365,6 +1368,8 @@ function loadPromptTransientSettings() {
       $("chk-keep-loaded").checked = settings.keep_loaded;
     if (settings.flash_attn !== undefined)
       $("gen-flash-attn").checked = settings.flash_attn;
+    if (settings.sdpa !== undefined)
+      $("gen-sdpa").checked = settings.sdpa;
     if (settings.sage_attn !== undefined)
       $("gen-sage-attn").checked = settings.sage_attn;
     if (settings.global_w !== undefined)
@@ -3118,6 +3123,7 @@ $("btn-gen-sample").addEventListener("click", async () => {
   // Add Anima generation params
   payload.flow_shift = parseFloat($("cfg-flow-shift").value) || 3.0;
   payload.flash_attn = $("gen-flash-attn").checked;
+  payload.sdpa = $("gen-sdpa").checked;
   payload.sage_attn = $("gen-sage-attn").checked;
   payload.gen_gpu_ids = getSelectedGenGPUs();
   payload.gen_multi_gpu_mode = $("gen-multi-gpu-mode").value;
@@ -3405,20 +3411,37 @@ async function init() {
   // Discard Button
   $("btn-discard").addEventListener("click", discardChanges);
   // Mutual exclusivity for Flash/Sage Attention
-  const enforceMutualAttention = (flashId, sageId) => {
+  const enforceMutualAttention = (flashId, sdpaId, sageId) => {
     const flash = $(flashId);
+    const sdpa = $(sdpaId);
     const sage = $(sageId);
-    if (!flash || !sage) return;
+    if (!flash || !sdpa) return;
     flash.addEventListener("change", () => {
-      if (flash.checked) sage.checked = false;
+      if (flash.checked) {
+        if (sage) sage.checked = false;
+        sdpa.checked = false;
+      }
       if (flashId.startsWith("gen-")) savePromptTransientSettings();
     });
-    sage.addEventListener("change", () => {
-      if (sage.checked) flash.checked = false;
+    sdpa.addEventListener("change", () => {
+      if (sdpa.checked) {
+        flash.checked = false;
+        if (sage) sage.checked = false;
+      }
       if (flashId.startsWith("gen-")) savePromptTransientSettings();
     });
+    if (sage) {
+      sage.addEventListener("change", () => {
+        if (sage.checked) {
+          flash.checked = false;
+          sdpa.checked = false;
+        }
+        if (flashId.startsWith("gen-")) savePromptTransientSettings();
+      });
+    }
   };
-  enforceMutualAttention("gen-flash-attn", "gen-sage-attn");
+  enforceMutualAttention("cfg-flash-attn", "cfg-sdpa", "cfg-sage-attn");
+  enforceMutualAttention("gen-flash-attn", "gen-sdpa", "gen-sage-attn");
   // Restore Job
   const lastJob = localStorage.getItem("lastJob");
   if (lastJob) {
